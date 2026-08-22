@@ -1,0 +1,47 @@
+# Binaries & compiled artifacts
+/grim
+/cryptovault
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Go test & coverage artifacts
+*.test
+*.out
+coverage.html
+coverage.txt
+*.prof
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.#*
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary & backup files
+*.tmp
+*.new
+*.bak
+scratch/
+
+# Local test vaults & encrypted test artifacts
+*.enc/
+*.age
+*.key
