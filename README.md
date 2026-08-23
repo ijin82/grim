@@ -163,10 +163,6 @@ grim completion fish > ~/.config/fish/completions/grim.fish
 
 ---
 
-```
-
----
-
 ## 💻 Cross-Platform Support & OS Nuances
 
 Grim is written in pure Go without CGO dependencies and runs natively on **Linux**, **macOS**, and **Windows**.
