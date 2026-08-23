@@ -23,7 +23,7 @@ import (
 	"golang.org/x/term"
 )
 
-var Version = "0.1.3"
+var Version = "0.1.4"
 
 var rootCmd = &cobra.Command{
 	Use:          "grim [vault]",
@@ -35,16 +35,16 @@ var rootCmd = &cobra.Command{
 All notes are encrypted with filippo.io/age (X25519 Master Key Architecture + Scrypt KDF).
 When unlocked, notes live in an isolated RAM workspace with live auto-sync.
 
-Usage:
-  grim open [vault]      # Open vault, start live sync & launch editor
-  grim init <name> <dir> # Create a new encrypted vault
-  grim add [vault] [dir] # Attach an existing encrypted vault (or scan disk)
-  grim remove <vault>    # Remove a vault from configuration
-  grim lock [vault]      # Wipe in-memory workspace and lock
-  grim list              # Show all configured vaults
-  grim setup             # Interactive configuration wizard (editor, timeout, passphrase)
-  grim setup [vault]     # Configure editor and timeout for a specific vault
-  grim install           # Install grim binary to system PATH`,
+Quick Commands & Aliases:
+  grim [vault]      (alias: grim o)     # Open vault, start live sync & launch editor
+  grim list         (alias: grim ls)    # Show all configured vaults & RAM status
+  grim setup                            # Interactive configuration wizard
+  grim add          (alias: grim a)     # Auto-scan disk & attach vaults
+  grim lock         (alias: grim close) # Wipe RAM workspace & lock
+  grim status       (alias: grim st)    # Check active in-memory vaults
+  grim remove       (alias: grim rm)    # Remove vault from configuration
+  grim init <name> <dir>                # Create a new encrypted vault
+  grim install                          # Install grim binary to system PATH`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vaultName := ""
@@ -118,7 +118,7 @@ var initCmd = &cobra.Command{
 
 var addCmd = &cobra.Command{
 	Use:     "add [vault] [dir]",
-	Aliases: []string{"import", "attach", "discover"},
+	Aliases: []string{"a"},
 	Short:   "Attach an existing encrypted vault from disk (or scan for vaults)",
 	Long: `Attach an existing encrypted vault directory (e.g. synced from Cloud/Git/Dropbox):
   grim add                   # Scan common folders for existing Grim vaults
@@ -412,9 +412,10 @@ func attachVaultDirect(cfg *config.Config, suggestedName string, absDir string) 
 }
 
 var openCmd = &cobra.Command{
-	Use:   "open [vault]",
-	Short: "Unlock a vault into RAM, start live sync, and launch editor",
-	Args:  cobra.MaximumNArgs(1),
+	Use:     "open [vault]",
+	Aliases: []string{"o"},
+	Short:   "Unlock a vault into RAM, start live sync, and launch editor",
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vaultName := ""
 		if len(args) > 0 {
@@ -425,9 +426,10 @@ var openCmd = &cobra.Command{
 }
 
 var lockCmd = &cobra.Command{
-	Use:   "lock [vault]",
-	Short: "Force lock a vault and wipe its RAM workspace",
-	Args:  cobra.MaximumNArgs(1),
+	Use:     "lock [vault]",
+	Aliases: []string{"close"},
+	Short:   "Force lock a vault and wipe its RAM workspace",
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig("")
 		if err != nil {
@@ -457,8 +459,9 @@ var lockCmd = &cobra.Command{
 }
 
 var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all configured vaults and their status",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List all configured vaults and their status",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig("")
 		if err != nil {
@@ -507,7 +510,7 @@ var listCmd = &cobra.Command{
 
 var removeCmd = &cobra.Command{
 	Use:     "remove <vault>",
-	Aliases: []string{"rm", "delete", "forget"},
+	Aliases: []string{"rm"},
 	Short:   "Remove a vault from configuration (does not delete files from disk)",
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -540,8 +543,9 @@ var removeCmd = &cobra.Command{
 }
 
 var statusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Check unlocked vaults in RAM",
+	Use:     "status",
+	Aliases: []string{"st"},
+	Short:   "Check unlocked vaults in RAM",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig("")
 		if err != nil {
@@ -843,9 +847,8 @@ func getKnownEditors() []EditorOption {
 }
 
 var setupCmd = &cobra.Command{
-	Use:     "setup [command-or-vault] [value]",
-	Aliases: []string{"editor", "config"},
-	Short:   "Interactive settings wizard (editor, timeout, passphrase, vaults)",
+	Use:   "setup [command-or-vault] [value]",
+	Short: "Interactive settings wizard (editor, timeout, passphrase, vaults)",
 	Long: `Interactive configuration wizard or direct CLI setter:
   grim setup                 # Interactive settings wizard
   grim setup work            # Configure settings for vault 'work'
@@ -1325,6 +1328,7 @@ func main() {
 	rootCmd.AddCommand(setupCmd)
 	rootCmd.AddCommand(setDefaultCmd)
 	rootCmd.AddCommand(installCmd)
+	rootCmd.SetUsageTemplate(strings.ReplaceAll(rootCmd.UsageTemplate(), "{{rpad .Name .NamePadding }}", "{{rpad .NameAndAliases .NamePadding }}"))
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

@@ -26,14 +26,46 @@ In the digital era, **Grim** serves as the modern cryptographic grimoire for dev
 
 ## 🌟 Key Features
 
+- **Dedicated Obsidian Integration:** Automatic vault registration in `obsidian.json`, native URL protocol handling (`obsidian://open?path=...`), sandbox awareness (Flatpak/Snap), and compatibility with Graph View, Canvas, Wikilinks, images/screenshots, and plugins.
+- **Editor Support:** Works with `Vim`, `Neovim`, `VS Code`, `Helix`, `Nano`, `Micro`, `Sublime Text`, `Emacs`, and custom editors.
 - **X25519 Master Key Architecture:** Instantaneous vault unlock and microsecond file saves, regardless of vault size (10 or 10,000 notes).
 - **Age Encryption:** Modern file-level encryption using `age` (Scrypt KDF protects the master key metadata).
-- **Isolated RAM Workspace:** Unlocks files directly into memory (`~/.cache/grim` / `tmpfs`), never writing plaintext notes to physical SSD/HDD.
+- **Isolated Volatile Memory:** Unlocks files directly into RAM (`tmpfs` / isolated memory cache), never writing plaintext notes to physical SSD/HDD.
 - **Continuous Live Sync:** Uses `fsnotify` to detect file saves and immediately auto-encrypts changes to `.age` files on physical disk.
-- **Obsidian, VS Code & Vim Integration:** Automatically registers and launches your preferred GUI or terminal editor targeting the in-memory Vault.
 - **Auto-Lock & Multi-Pass Memory Wipe:** Closes the session on timeout, `Ctrl+C`, `lock` command, or editor exit, and overwrites RAM files with zeroes and random bytes before unmounting.
 - **Interactive Setup Wizard:** Built-in `grim setup` wizard to configure editors, auto-lock timeouts, and re-encrypt vaults.
 - **Git-Friendly:** Because each note is encrypted to its own `.md.age` file, you can easily use Git (`git init`, `git commit`, `git push`) to sync your encrypted vault.
+
+---
+
+## 🔮 Obsidian & Editor Ecosystem
+
+While **Grim** works with various text editors and IDEs, it provides **dedicated integration for Obsidian**:
+
+### 💎 Why Grim is a Good Encrypted Backend for Obsidian:
+* **Zero Plugins Required:** No third-party Obsidian community plugins needed inside your vault. Encryption runs externally via pure Go and `age`.
+* **Native Obsidian Features:** Because notes live as a standard folder structure in volatile memory during your session, core Obsidian capabilities work naturally:
+  * 🕸️ **Graph View** & Canvas
+  * 🔗 **Wikilinks** (`[[note-name]]`) & Tag indexing (`#tag`)
+  * 🖼️ **Attachments & Screenshots:** Paste images directly (`Ctrl+V`), embed PDFs, or store audio memos — encrypted automatically.
+  * 🧩 **Community Plugins & Themes:** Settings in `.obsidian/` are preserved and synchronized.
+* **Automated `obsidian.json` Registry:** Grim injects the active RAM workspace into Obsidian's known vaults list on launch, and cleans it up upon lock, so you don't have to manually browse or import folders.
+* **Sandbox & Flatpak Awareness:** Automatic environment detection handles Native Linux packages, Flatpak sandboxes, Snap, macOS app bundles, and Windows.
+
+---
+
+## 📋 Command Cheat Sheet
+
+| Action | Full Command | Short Alias | Description |
+| :--- | :--- | :--- | :--- |
+| **Open Vault** | `grim open [vault]` | `grim [vault]` / `grim o` | Decrypt to RAM and launch editor |
+| **List Vaults** | `grim list` | `grim ls` | Show configured vaults and lock status |
+| **Settings Wizard** | `grim setup` | — | Interactive configuration wizard |
+| **Discover / Attach** | `grim add [dir]` | `grim a` | Scan disk or attach existing vault |
+| **Lock Vault** | `grim lock [vault]` | `grim close` | Wipe in-memory workspace immediately |
+| **Status** | `grim status` | `grim st` | Check active RAM sessions |
+| **Remove Vault** | `grim remove <vault>` | `grim rm` | Remove vault from configuration |
+| **Create Vault** | `grim init <vault> <dir>` | — | Initialize a new encrypted vault |
 
 ---
 
