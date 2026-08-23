@@ -120,6 +120,14 @@ func Unlock(vaultPath string, ramPath string, meta *Meta) error {
 			return nil
 		}
 
+		// Skip .git directory entirely (git repo stays on physical disk, never copied to RAM)
+		if relPath == ".git" || strings.HasPrefix(relPath, ".git/") || strings.HasPrefix(relPath, ".git\\") {
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		// Skip temporary files
 		if strings.HasSuffix(relPath, ".tmp") || strings.HasSuffix(relPath, ".new") {
 			return nil
@@ -198,6 +206,14 @@ func FullSyncToVault(ramPath string, vaultPath string, pubKey string) error {
 			return nil
 		}
 
+		relPath, _ := filepath.Rel(ramPath, path)
+		if relPath == ".git" || strings.HasPrefix(relPath, ".git/") || strings.HasPrefix(relPath, ".git\\") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		if d.IsDir() {
 			return nil
 		}
@@ -217,6 +233,10 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 	// Add all subdirectories to watcher
 	_ = filepath.WalkDir(ramRoot, func(path string, d fs.DirEntry, err error) error {
 		if err == nil && d != nil && d.IsDir() {
+			relPath, _ := filepath.Rel(ramRoot, path)
+			if relPath == ".git" || strings.HasPrefix(relPath, ".git/") || strings.HasPrefix(relPath, ".git\\") {
+				return filepath.SkipDir
+			}
 			_ = watcher.Add(path)
 		}
 		return nil
