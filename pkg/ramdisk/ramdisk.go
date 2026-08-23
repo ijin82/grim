@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -31,43 +32,41 @@ type LockInfo struct {
 
 // GetPath returns the expected workspace path for a vault without creating it.
 func GetPath(vaultName string) string {
+	return GetPathForEditor(vaultName, "")
+}
+
+// GetPathForEditor returns the expected workspace path tailored to the editor type.
+func GetPathForEditor(vaultName string, editorName string) string {
 	if vaultName == "" {
 		vaultName = "default"
 	}
-	baseDir := getBaseWorkspaceDir()
+	baseDir := getBaseWorkspaceDir(editorName)
 	return filepath.Join(baseDir, "grim-"+vaultName)
 }
 
 // IsUnlocked returns true if the workspace directory currently exists and is owned by an active process.
 func IsUnlocked(vaultName string) bool {
-	p := GetPath(vaultName)
-	fi, err := os.Stat(p)
-	if err != nil || !fi.IsDir() {
-		// Check fallback locations
-		for _, altBase := range getAllPossibleWorkspaceDirs() {
-			altPath := filepath.Join(altBase, "grim-"+vaultName)
-			if altFi, err := os.Stat(altPath); err == nil && altFi.IsDir() {
-				if isWorkspaceActive(altPath) {
-					return true
-				}
-				_ = WipeAndRemove(altPath)
+	// Check all possible locations
+	for _, altBase := range getAllPossibleWorkspaceDirs() {
+		altPath := filepath.Join(altBase, "grim-"+vaultName)
+		if altFi, err := os.Stat(altPath); err == nil && altFi.IsDir() {
+			if isWorkspaceActive(altPath) {
+				return true
 			}
+			_ = WipeAndRemove(altPath)
 		}
-		return false
 	}
-
-	if isWorkspaceActive(p) {
-		return true
-	}
-
-	// Stale directory from crash - wipe it
-	_ = WipeAndRemove(p)
 	return false
 }
 
 // New creates a new isolated workspace directory in pure RAM (tmpfs) for a vault.
 func New(vaultName string) (*Workspace, error) {
-	vaultRAMPath := GetPath(vaultName)
+	return NewForEditor(vaultName, "")
+}
+
+// NewForEditor creates a new isolated workspace directory tailored to the editor.
+func NewForEditor(vaultName string, editorName string) (*Workspace, error) {
+	vaultRAMPath := GetPathForEditor(vaultName, editorName)
 
 	// Clean up if something was left from a previous crash
 	if _, err := os.Stat(vaultRAMPath); err == nil {
@@ -94,37 +93,26 @@ func New(vaultName string) (*Workspace, error) {
 	}, nil
 }
 
-// getBaseWorkspaceDir prioritizes true volatile RAM tmpfs mounts in Linux, and OS cache in macOS/Windows.
-func getBaseWorkspaceDir() string {
-	if runtime.GOOS == "linux" {
-		// Priority 1: Systemd / Linux user runtime directory (/run/user/$UID - pure RAM tmpfs)
-		if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
-			grimRun := filepath.Join(runtimeDir, "grim")
-			if err := os.MkdirAll(grimRun, 0700); err == nil {
-				return grimRun
-			}
+func isFlatpakEditor(editorName string) bool {
+	lower := strings.ToLower(editorName)
+	if lower == "" || lower == "obsidian" {
+		// If native obsidian binary exists in PATH, it's native!
+		if path, err := exec.LookPath("obsidian"); err == nil && !strings.Contains(path, "flatpak") && !strings.Contains(path, "snap") {
+			return false
 		}
-
-		// Priority 2: POSIX Shared Memory (/dev/shm - pure RAM tmpfs)
-		if fi, err := os.Stat("/dev/shm"); err == nil && fi.IsDir() {
-			uid := os.Getuid()
-			shmDir := filepath.Join("/dev/shm", fmt.Sprintf("grim-%d", uid))
-			if err := os.MkdirAll(shmDir, 0700); err == nil {
-				return shmDir
-			}
-		}
-
-		// Priority 3: XDG Cache Directory (~/.cache/grim)
-		home, err := os.UserHomeDir()
-		if err == nil && home != "" {
-			cacheDir := os.Getenv("XDG_CACHE_HOME")
-			if cacheDir == "" {
-				cacheDir = filepath.Join(home, ".cache")
-			}
-			return filepath.Join(cacheDir, "grim")
+		// If flatpak is installed, check if md.obsidian.Obsidian is present
+		if _, err := exec.LookPath("flatpak"); err == nil {
+			return true
 		}
 	}
+	if strings.Contains(lower, "flatpak") {
+		return true
+	}
+	return false
+}
 
+// getBaseWorkspaceDir prioritizes true volatile RAM tmpfs mounts for native editors, and cache for Flatpak/Snap.
+func getBaseWorkspaceDir(editorName string) string {
 	if runtime.GOOS == "darwin" {
 		home, err := os.UserHomeDir()
 		if err == nil && home != "" {
@@ -135,6 +123,38 @@ func getBaseWorkspaceDir() string {
 	if runtime.GOOS == "windows" {
 		if localApp := os.Getenv("LOCALAPPDATA"); localApp != "" {
 			return filepath.Join(localApp, "grim", "cache")
+		}
+	}
+
+	// Linux
+	if isFlatpakEditor(editorName) {
+		// Sandboxed Flatpak Obsidian requires ~/.cache/grim
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			cacheDir := os.Getenv("XDG_CACHE_HOME")
+			if cacheDir == "" {
+				cacheDir = filepath.Join(home, ".cache")
+			}
+			return filepath.Join(cacheDir, "grim")
+		}
+	} else {
+		// Native editors (Native Obsidian, Vim, VS Code, Helix, etc.) get pure RAM tmpfs!
+		if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
+			grimRun := filepath.Join(runtimeDir, "grim")
+			if err := os.MkdirAll(grimRun, 0700); err == nil {
+				return grimRun
+			}
+		}
+		if fi, err := os.Stat("/dev/shm"); err == nil && fi.IsDir() {
+			uid := os.Getuid()
+			shmDir := filepath.Join("/dev/shm", fmt.Sprintf("grim-%d", uid))
+			if err := os.MkdirAll(shmDir, 0700); err == nil {
+				return shmDir
+			}
+		}
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			return filepath.Join(home, ".cache", "grim")
 		}
 	}
 

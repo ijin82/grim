@@ -23,7 +23,7 @@ import (
 	"golang.org/x/term"
 )
 
-var Version = "0.1.1"
+var Version = "0.1.2"
 
 var rootCmd = &cobra.Command{
 	Use:          "grim [vault]",
@@ -667,10 +667,16 @@ func executeOpen(vaultName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to unlock: %w", err)
 	}
-	fmt.Printf("✨ Authentication successful! (Vault: %s, Version: %d)\n", meta.VaultName, meta.Version)
+	editor := vCfg.Editor
+	if editor == "" {
+		editor = cfg.DefaultEditor
+	}
+	if editor == "" {
+		editor = "obsidian"
+	}
 
 	// 2. Create isolated RAM workspace
-	ws, err := ramdisk.New(vaultName)
+	ws, err := ramdisk.NewForEditor(vaultName, editor)
 	if err != nil {
 		return fmt.Errorf("failed to create RAM workspace: %w", err)
 	}
@@ -722,14 +728,6 @@ func executeOpen(vaultName string) error {
 	}()
 
 	// 6. Launch editor
-	editor := vCfg.Editor
-	if editor == "" {
-		editor = cfg.DefaultEditor
-	}
-	if editor == "" {
-		editor = "obsidian"
-	}
-
 	fmt.Printf("🚀 Launching editor (%s) pointing to RAM workspace...\n", editor)
 	proc, err := runner.Launch(editor, ws.Path)
 	if err != nil {
