@@ -29,22 +29,21 @@ var rootCmd = &cobra.Command{
 	Use:          "grim [vault]",
 	Version:      Version,
 	SilenceUsage: true,
-	Aliases:      []string{"grimoire"},
 	Short:        "Grim (Grimoire) — Secure Encrypted Markdown Note Vaults for Obsidian & text editors",
 	Long: `📖 Grim (Grimoire) is a fast, secure CLI tool for managing encrypted markdown vaults.
 All notes are encrypted with filippo.io/age (X25519 Master Key Architecture + Scrypt KDF).
 When unlocked, notes live in an isolated RAM workspace with live auto-sync.
 
-Quick Commands & Aliases:
-  grim [vault]      (alias: grim o)     # Open vault, start live sync & launch editor
-  grim list         (alias: grim ls)    # Show all configured vaults & RAM status
-  grim setup                            # Interactive configuration wizard
-  grim add          (alias: grim a)     # Auto-scan disk & attach vaults
-  grim lock         (alias: grim close) # Wipe RAM workspace & lock
-  grim status       (alias: grim st)    # Check active in-memory vaults
-  grim remove       (alias: grim rm)    # Remove vault from configuration
-  grim init <name> <dir>                # Create a new encrypted vault
-  grim install                          # Install grim binary to system PATH`,
+Quick Commands:
+  grim [vault]           # Open vault, start live sync & launch editor
+  grim list              # Show all configured vaults & RAM status
+  grim setup             # Interactive configuration wizard
+  grim add               # Auto-scan disk & attach vaults
+  grim lock              # Wipe RAM workspace & lock
+  grim status            # Check active in-memory vaults
+  grim remove <vault>    # Remove vault from configuration
+  grim init <name> <dir> # Create a new encrypted vault
+  grim install           # Install grim binary to system PATH`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vaultName := ""
@@ -412,10 +411,10 @@ func attachVaultDirect(cfg *config.Config, suggestedName string, absDir string) 
 }
 
 var openCmd = &cobra.Command{
-	Use:     "open [vault]",
-	Aliases: []string{"o"},
-	Short:   "Unlock a vault into RAM, start live sync, and launch editor",
-	Args:    cobra.MaximumNArgs(1),
+	Use:    "open [vault]",
+	Hidden: true,
+	Short:  "Unlock a vault into RAM, start live sync, and launch editor",
+	Args:   cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vaultName := ""
 		if len(args) > 0 {
@@ -426,9 +425,8 @@ var openCmd = &cobra.Command{
 }
 
 var lockCmd = &cobra.Command{
-	Use:     "lock [vault]",
-	Aliases: []string{"close"},
-	Short:   "Force lock a vault and wipe its RAM workspace",
+	Use:   "lock [vault]",
+	Short: "Force lock a vault and wipe its RAM workspace",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig("")

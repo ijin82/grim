@@ -56,13 +56,13 @@ While **Grim** works with various text editors and IDEs, it provides **dedicated
 
 ## 📋 Command Cheat Sheet
 
-| Action | Full Command | Short Alias | Description |
+| Action | Command | Alias | Description |
 | :--- | :--- | :--- | :--- |
-| **Open Vault** | `grim open [vault]` | `grim [vault]` / `grim o` | Decrypt to RAM and launch editor |
+| **Open Vault** | `grim [vault]` | — | Decrypt to RAM and launch editor |
 | **List Vaults** | `grim list` | `grim ls` | Show configured vaults and lock status |
 | **Settings Wizard** | `grim setup` | — | Interactive configuration wizard |
 | **Discover / Attach** | `grim add [dir]` | `grim a` | Scan disk or attach existing vault |
-| **Lock Vault** | `grim lock [vault]` | `grim close` | Wipe in-memory workspace immediately |
+| **Lock Vault** | `grim lock [vault]` | — | Wipe in-memory workspace immediately |
 | **Status** | `grim status` | `grim st` | Check active RAM sessions |
 | **Remove Vault** | `grim remove <vault>` | `grim rm` | Remove vault from configuration |
 | **Create Vault** | `grim init <vault> <dir>` | — | Initialize a new encrypted vault |
@@ -73,6 +73,12 @@ While **Grim** works with various text editors and IDEs, it provides **dedicated
 
 ### 1. Build & Install
 
+**Via `go install` (Recommended):**
+```bash
+go install github.com/ijin82/grim/cmd/grim@latest
+```
+
+**Or build from source:**
 ```bash
 # Build the binary
 go build -o grim ./cmd/grim
@@ -96,6 +102,8 @@ grim init work ~/Documents/SecretGrimoire.enc
 ```bash
 # Auto-scan disk for existing Grim vaults:
 grim add
+# or short alias:
+grim a
 
 # Or attach a specific folder directly:
 grim add work ~/Dropbox/SecretGrimoire.enc
@@ -109,8 +117,10 @@ grim add work ~/Dropbox/SecretGrimoire.enc
 ### 3. Open and Start Editing
 
 ```bash
-grim open work
-# or simply:
+# Open specific vault:
+grim work
+
+# Or open default vault:
 grim
 ```
 1. Enter your master passphrase.
@@ -226,14 +236,14 @@ Grim is written in pure Go without CGO dependencies and runs natively on **Linux
 
 ## 📋 Commands Summary
 
-- `grim` / `grim open [vault]` — Unlock vault to RAM, start sync, launch editor.
+- `grim [vault]` — Unlock vault into RAM, start sync, launch editor.
 - `grim init <vault> <dir>` — Create a new encrypted vault.
-- `grim add [vault] [dir]` — Attach existing vault or auto-discover from disk.
-- `grim remove <vault>` — Remove vault from config (`rm`, `delete`, `forget`).
+- `grim add [vault] [dir]` (or `grim a`) — Attach existing vault or auto-discover from disk.
+- `grim list` (or `grim ls`) — List all configured vaults and their status.
+- `grim status` (or `grim st`) — View active unlocked vaults in RAM.
 - `grim lock [vault]` — Force lock and wipe RAM workspace.
-- `grim list` — List all configured vaults and their status.
-- `grim status` — View active unlocked vaults.
-- `grim setup` — Global interactive configuration wizard (editor, timeout, passphrase).
+- `grim remove <vault>` (or `grim rm`) — Remove vault from configuration.
+- `grim setup` — Interactive configuration wizard (editor, timeout, passphrase).
 - `grim setup [vault]` — Interactive settings for a specific vault.
 - `grim set-default <vault>` — Set the default vault.
 - `grim install` — Install `grim` binary into system `$PATH`.
