@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // Workspace manages an isolated workspace directory for a decrypted vault.
@@ -50,10 +51,18 @@ func New(vaultName string) (*Workspace, error) {
 	}, nil
 }
 
-// getBaseWorkspaceDir finds the best workspace directory accessible to both host and sandboxed apps (Flatpak/Snap).
+// getBaseWorkspaceDir finds the best workspace directory across Linux, macOS, and Windows.
 func getBaseWorkspaceDir() string {
 	home, err := os.UserHomeDir()
 	if err == nil && home != "" {
+		if runtime.GOOS == "darwin" {
+			return filepath.Join(home, "Library", "Caches", "grim")
+		}
+		if runtime.GOOS == "windows" {
+			if localApp := os.Getenv("LOCALAPPDATA"); localApp != "" {
+				return filepath.Join(localApp, "grim", "cache")
+			}
+		}
 		cacheDir := os.Getenv("XDG_CACHE_HOME")
 		if cacheDir == "" {
 			cacheDir = filepath.Join(home, ".cache")

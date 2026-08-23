@@ -26,22 +26,7 @@ func DefaultConfigPath() (string, error) {
 		return "", fmt.Errorf("failed to get user home dir: %w", err)
 	}
 
-	grimPath := filepath.Join(home, ".config", "grim", "config.yaml")
-
-	// If grim config doesn't exist but old cryptovault config exists, migrate it
-	if _, err := os.Stat(grimPath); os.IsNotExist(err) {
-		legacyPath := filepath.Join(home, ".config", "cryptovault", "config.yaml")
-		if _, err := os.Stat(legacyPath); err == nil {
-			// Migrate legacy file
-			data, err := os.ReadFile(legacyPath)
-			if err == nil {
-				_ = os.MkdirAll(filepath.Dir(grimPath), 0700)
-				_ = os.WriteFile(grimPath, data, 0600)
-			}
-		}
-	}
-
-	return grimPath, nil
+	return filepath.Join(home, ".config", "grim", "config.yaml"), nil
 }
 
 func LoadConfig(path string) (*Config, error) {

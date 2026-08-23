@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,10 +23,14 @@ import (
 	"golang.org/x/term"
 )
 
+var Version = "0.1.0"
+
 var rootCmd = &cobra.Command{
-	Use:     "grim [vault-name]",
-	Aliases: []string{"grimoire"},
-	Short:   "Grim (Grimoire) — Secure Encrypted Markdown Note Vaults for Obsidian & text editors",
+	Use:          "grim [vault]",
+	Version:      Version,
+	SilenceUsage: true,
+	Aliases:      []string{"grimoire"},
+	Short:        "Grim (Grimoire) — Secure Encrypted Markdown Note Vaults for Obsidian & text editors",
 	Long: `📖 Grim (Grimoire) is a fast, secure CLI tool for managing encrypted markdown vaults.
 All notes are encrypted with filippo.io/age (X25519 Master Key Architecture + Scrypt KDF).
 When unlocked, notes live in an isolated RAM workspace with live auto-sync.
@@ -33,9 +38,12 @@ When unlocked, notes live in an isolated RAM workspace with live auto-sync.
 Usage:
   grim open [vault]      # Open vault, start live sync & launch editor
   grim init <name> <dir> # Create a new encrypted vault
+  grim add [vault] [dir] # Attach an existing encrypted vault (or scan disk)
+  grim remove <vault>    # Remove a vault from configuration
   grim lock [vault]      # Wipe in-memory workspace and lock
   grim list              # Show all configured vaults
   grim setup             # Interactive configuration wizard (editor, timeout, passphrase)
+  grim setup [vault]     # Configure editor and timeout for a specific vault
   grim install           # Install grim binary to system PATH`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -48,14 +56,14 @@ Usage:
 }
 
 var initCmd = &cobra.Command{
-	Use:   "init <vault-name> <vault-dir>",
+	Use:   "init <vault> <dir>",
 	Short: "Initialize a new encrypted vault",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vaultName := args[0]
 		vaultDir := args[1]
 
-		absDir, err := filepath.Abs(vaultDir)
+		absDir, err := expandPath(vaultDir)
 		if err != nil {
 			return fmt.Errorf("invalid path: %w", err)
 		}
@@ -108,8 +116,303 @@ var initCmd = &cobra.Command{
 	},
 }
 
+var addCmd = &cobra.Command{
+	Use:     "add [vault] [dir]",
+	Aliases: []string{"import", "attach", "discover"},
+	Short:   "Attach an existing encrypted vault from disk (or scan for vaults)",
+	Long: `Attach an existing encrypted vault directory (e.g. synced from Cloud/Git/Dropbox):
+  grim add                   # Scan common folders for existing Grim vaults
+  grim add work /path/to/dir # Attach /path/to/dir as vault 'work'`,
+	Args: cobra.MaximumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig("")
+		if err != nil {
+			return err
+		}
+
+		if len(args) == 0 {
+			return runDiscoverAndAddInteractive(cfg)
+		}
+
+		vaultName := args[0]
+		vaultDir := ""
+		if len(args) == 2 {
+			vaultDir = args[1]
+		} else {
+			// Check if single arg is actually an existing directory
+			if exp, err := expandPath(vaultName); err == nil {
+				if fi, err := os.Stat(exp); err == nil && fi.IsDir() {
+					vaultDir = exp
+					vaultName = filepath.Base(vaultDir)
+				}
+			}
+			if vaultDir == "" {
+				fmt.Print("Enter directory path for this vault: ")
+				scanner := bufio.NewScanner(os.Stdin)
+				if scanner.Scan() {
+					vaultDir = strings.TrimSpace(scanner.Text())
+				}
+			}
+		}
+
+		absDir, err := expandPath(vaultDir)
+		if err != nil {
+			return fmt.Errorf("invalid path: %w", err)
+		}
+
+		return attachVaultDirect(cfg, vaultName, absDir)
+	},
+}
+
+type DiscoveredVault struct {
+	Path      string
+	Name      string
+	VaultMeta *vault.Meta
+}
+
+func scanDirectoryForVaults(baseDir string, maxDepth int) []DiscoveredVault {
+	var results []DiscoveredVault
+	visited := make(map[string]bool)
+
+	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
+		return results
+	}
+
+	// Check if baseDir itself is a vault
+	metaPath := filepath.Join(baseDir, vault.MetaFileName)
+	if fi, err := os.Stat(metaPath); err == nil && !fi.IsDir() {
+		abs, _ := filepath.Abs(baseDir)
+		return []DiscoveredVault{{Path: abs, Name: filepath.Base(abs)}}
+	}
+
+	_ = filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+
+		rel, _ := filepath.Rel(baseDir, path)
+		if strings.Count(rel, string(filepath.Separator)) > maxDepth {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if d.IsDir() && path != baseDir {
+			subMeta := filepath.Join(path, vault.MetaFileName)
+			if fi, err := os.Stat(subMeta); err == nil && !fi.IsDir() {
+				abs, _ := filepath.Abs(path)
+				if !visited[abs] {
+					visited[abs] = true
+					results = append(results, DiscoveredVault{
+						Path: abs,
+						Name: filepath.Base(abs),
+					})
+				}
+				return filepath.SkipDir
+			}
+		}
+		return nil
+	})
+
+	return results
+}
+
+func scanForVaults() []DiscoveredVault {
+	home, _ := os.UserHomeDir()
+	candidateDirs := []string{
+		".",
+		filepath.Join(home, "Documents"),
+		filepath.Join(home, "Dropbox"),
+		filepath.Join(home, "Nextcloud"),
+		filepath.Join(home, "Sync"),
+		filepath.Join(home, "GDrive"),
+		filepath.Join(home, "Google Drive"),
+		filepath.Join(home, "OneDrive"),
+		filepath.Join(home, "Yandex.Disk"),
+		filepath.Join(home, "iCloudDrive"),
+		filepath.Join(home, "Notes"),
+		filepath.Join(home, "Vaults"),
+	}
+
+	var results []DiscoveredVault
+	visited := make(map[string]bool)
+
+	for _, cand := range candidateDirs {
+		found := scanDirectoryForVaults(cand, 3)
+		for _, f := range found {
+			if !visited[f.Path] {
+				visited[f.Path] = true
+				results = append(results, f)
+			}
+		}
+	}
+
+	return results
+}
+
+func runDiscoverAndAddInteractive(cfg *config.Config) error {
+	scanner := bufio.NewScanner(os.Stdin)
+
+	fmt.Println("🔍 Scanning common directories for existing Grim vaults...")
+	discovered := scanForVaults()
+
+	var unconfigured []DiscoveredVault
+	for _, d := range discovered {
+		alreadyConfigured := false
+		for _, v := range cfg.Vaults {
+			if v.Path == d.Path {
+				alreadyConfigured = true
+				break
+			}
+		}
+		if !alreadyConfigured {
+			unconfigured = append(unconfigured, d)
+		}
+	}
+
+	if len(unconfigured) == 0 {
+		if len(discovered) > 0 {
+			fmt.Println("✨ All discovered vaults on disk are already in your configuration!")
+		} else {
+			fmt.Println("🤷 No existing encrypted vaults found automatically.")
+		}
+		fmt.Print("\nEnter path to existing vault directory (or press Enter to cancel): ")
+		if scanner.Scan() {
+			path := strings.TrimSpace(scanner.Text())
+			if path != "" {
+				absDir, err := expandPath(path)
+				if err != nil {
+					return fmt.Errorf("invalid path: %w", err)
+				}
+				return attachVaultDirect(cfg, filepath.Base(absDir), absDir)
+			}
+		}
+		return nil
+	}
+
+	fmt.Printf("\n📂 Discovered %d unconfigured vault(s) on disk:\n", len(unconfigured))
+	fmt.Println("--------------------------------------------------")
+	for i, d := range unconfigured {
+		fmt.Printf(" %d) %s\n    Path: %s\n", i+1, d.Name, d.Path)
+	}
+	fmt.Printf(" %d) Enter custom path...\n", len(unconfigured)+1)
+	fmt.Println(" 0) Cancel")
+	fmt.Println("--------------------------------------------------")
+	fmt.Printf("Select vault to attach [0-%d]: ", len(unconfigured)+1)
+
+	if scanner.Scan() {
+		text := strings.TrimSpace(scanner.Text())
+		idx, err := strconv.Atoi(text)
+		if err == nil && idx >= 1 && idx <= len(unconfigured) {
+			chosen := unconfigured[idx-1]
+			return attachVaultDirect(cfg, chosen.Name, chosen.Path)
+		} else if err == nil && idx == len(unconfigured)+1 {
+			fmt.Print("Enter vault directory path: ")
+			if scanner.Scan() {
+				path := strings.TrimSpace(scanner.Text())
+				if path != "" {
+					absDir, err := expandPath(path)
+					if err != nil {
+						return fmt.Errorf("invalid path: %w", err)
+					}
+					return attachVaultDirect(cfg, filepath.Base(absDir), absDir)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func attachVaultDirect(cfg *config.Config, suggestedName string, absDir string) error {
+	scanner := bufio.NewScanner(os.Stdin)
+	metaFile := filepath.Join(absDir, vault.MetaFileName)
+
+	if _, err := os.Stat(metaFile); os.IsNotExist(err) {
+		// If directly not a vault, search subfolders
+		found := scanDirectoryForVaults(absDir, 4)
+		if len(found) == 0 {
+			return fmt.Errorf("no Grim vault found at '%s' or any of its subfolders (missing %s)", absDir, vault.MetaFileName)
+		}
+		if len(found) == 1 {
+			fmt.Printf("🔍 Detected Grim vault in subfolder: %s\n", found[0].Path)
+			absDir = found[0].Path
+			suggestedName = found[0].Name
+		} else {
+			fmt.Printf("\n📂 Found %d Grim vaults inside '%s':\n", len(found), absDir)
+			fmt.Println("--------------------------------------------------")
+			for i, f := range found {
+				fmt.Printf(" %d) %s\n    Path: %s\n", i+1, f.Name, f.Path)
+			}
+			fmt.Printf("Select vault to attach [1-%d]: ", len(found))
+			if scanner.Scan() {
+				idx, err := strconv.Atoi(strings.TrimSpace(scanner.Text()))
+				if err != nil || idx < 1 || idx > len(found) {
+					return fmt.Errorf("invalid selection")
+				}
+				absDir = found[idx-1].Path
+				suggestedName = found[idx-1].Name
+			}
+		}
+	}
+
+	fmt.Printf("\n🔑 Found encrypted Grim vault at: %s\n", absDir)
+	passphrase, err := promptPassword("Enter master passphrase for this vault: ")
+	if err != nil {
+		return err
+	}
+
+	meta, err := vault.VerifyPassphrase(absDir, passphrase)
+	if err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
+	}
+
+	vaultName := suggestedName
+	if meta.VaultName != "" && meta.VaultName != "default" {
+		vaultName = meta.VaultName
+	}
+
+	fmt.Printf("Enter alias/name for this vault [default: %s]: ", vaultName)
+	if scanner.Scan() {
+		inputName := strings.TrimSpace(scanner.Text())
+		if inputName != "" {
+			vaultName = inputName
+		}
+	}
+
+	if _, exists := cfg.Vaults[vaultName]; exists {
+		fmt.Printf("⚠️  Vault '%s' already exists in config. Overwrite path? [y/N]: ", vaultName)
+		if scanner.Scan() {
+			ans := strings.ToLower(strings.TrimSpace(scanner.Text()))
+			if ans != "y" && ans != "yes" {
+				fmt.Println("Action cancelled.")
+				return nil
+			}
+		}
+	}
+
+	cfg.Vaults[vaultName] = config.VaultConfig{
+		Path:           absDir,
+		Editor:         cfg.DefaultEditor,
+		TimeoutMinutes: 30,
+	}
+
+	if cfg.DefaultVault == "" {
+		cfg.DefaultVault = vaultName
+	}
+
+	if err := cfg.Save(""); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	fmt.Printf("\n🎉 Vault '%s' successfully attached and saved to config!\n", vaultName)
+	fmt.Printf("👉 To open your notes, run: grim open %s\n", vaultName)
+	return nil
+}
+
 var openCmd = &cobra.Command{
-	Use:   "open [vault-name]",
+	Use:   "open [vault]",
 	Short: "Unlock a vault into RAM, start live sync, and launch editor",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -122,7 +425,7 @@ var openCmd = &cobra.Command{
 }
 
 var lockCmd = &cobra.Command{
-	Use:   "lock [vault-name]",
+	Use:   "lock [vault]",
 	Short: "Force lock a vault and wipe its RAM workspace",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -163,7 +466,9 @@ var listCmd = &cobra.Command{
 		}
 
 		if len(cfg.Vaults) == 0 {
-			fmt.Println("No vaults configured yet. Create one with: grim init <name> <path>")
+			fmt.Println("No vaults configured yet.")
+			fmt.Println("👉 Create a new vault:       grim init <vault> <dir>")
+			fmt.Println("👉 Attach an existing vault:  grim add")
 			return nil
 		}
 
@@ -178,6 +483,8 @@ var listCmd = &cobra.Command{
 			status := "🔒 LOCKED"
 			if ramdisk.IsUnlocked(name) {
 				status = "🔓 UNLOCKED (in RAM)"
+			} else if _, err := os.Stat(filepath.Join(v.Path, vault.MetaFileName)); os.IsNotExist(err) {
+				status = "❓ NOT FOUND ON DISK"
 			}
 
 			ed := v.Editor
@@ -194,6 +501,40 @@ var listCmd = &cobra.Command{
 			fmt.Printf("    Timeout: %d min\n\n", v.TimeoutMinutes)
 		}
 		fmt.Println("(* indicates default vault)")
+		return nil
+	},
+}
+
+var removeCmd = &cobra.Command{
+	Use:     "remove <vault>",
+	Aliases: []string{"rm", "delete", "forget"},
+	Short:   "Remove a vault from configuration (does not delete files from disk)",
+	Args:    cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		cfg, err := config.LoadConfig("")
+		if err != nil {
+			return err
+		}
+
+		if _, exists := cfg.Vaults[name]; !exists {
+			return fmt.Errorf("vault '%s' not found in configuration", name)
+		}
+
+		delete(cfg.Vaults, name)
+		if cfg.DefaultVault == name {
+			cfg.DefaultVault = ""
+			for k := range cfg.Vaults {
+				cfg.DefaultVault = k
+				break
+			}
+		}
+
+		if err := cfg.Save(""); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+
+		fmt.Printf("🗑️  Vault '%s' successfully removed from configuration.\n", name)
 		return nil
 	},
 }
@@ -223,7 +564,7 @@ var statusCmd = &cobra.Command{
 }
 
 var setDefaultCmd = &cobra.Command{
-	Use:   "set-default <vault-name>",
+	Use:   "set-default <vault>",
 	Short: "Set the default vault",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -273,6 +614,33 @@ func executeOpen(vaultName string) error {
 		return fmt.Errorf("vault '%s' not configured. Run 'grim list'", vaultName)
 	}
 
+	// Check if vault files actually exist on disk
+	metaFile := filepath.Join(vCfg.Path, vault.MetaFileName)
+	if _, err := os.Stat(metaFile); os.IsNotExist(err) {
+		fmt.Printf("⚠️  Vault '%s' was not found on disk at: %s\n", vaultName, vCfg.Path)
+		fmt.Print("Would you like to remove this missing vault from your configuration? [Y/n]: ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() {
+			ans := strings.ToLower(strings.TrimSpace(scanner.Text()))
+			if ans == "" || ans == "y" || ans == "yes" {
+				delete(cfg.Vaults, vaultName)
+				if cfg.DefaultVault == vaultName {
+					cfg.DefaultVault = ""
+					for k := range cfg.Vaults {
+						cfg.DefaultVault = k
+						break
+					}
+				}
+				if err := cfg.Save(""); err != nil {
+					return fmt.Errorf("failed to update config: %w", err)
+				}
+				fmt.Printf("🗑️  Vault '%s' removed from configuration.\n", vaultName)
+				return nil
+			}
+		}
+		return fmt.Errorf("vault metadata missing at %s", vCfg.Path)
+	}
+
 	if ramdisk.IsUnlocked(vaultName) {
 		fmt.Printf("⚠️  Vault '%s' is ALREADY UNLOCKED in RAM.\n", vaultName)
 		wsPath := ramdisk.GetPath(vaultName)
@@ -314,17 +682,46 @@ func executeOpen(vaultName string) error {
 		return fmt.Errorf("failed to decrypt vault files: %w", err)
 	}
 
-	// 4. Start background continuous sync
+	// 4. Inactivity Timer setup
+	var timer *time.Timer
+	var timerMu sync.Mutex
+	var timeoutChan <-chan time.Time
+
+	resetInactivityTimer := func() {
+		if vCfg.TimeoutMinutes <= 0 {
+			return
+		}
+		timerMu.Lock()
+		defer timerMu.Unlock()
+		if timer != nil {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(time.Duration(vCfg.TimeoutMinutes) * time.Minute)
+		}
+	}
+
+	if vCfg.TimeoutMinutes > 0 {
+		timer = time.NewTimer(time.Duration(vCfg.TimeoutMinutes) * time.Minute)
+		timeoutChan = timer.C
+		defer timer.Stop()
+	}
+
+	// 5. Start background continuous sync with timer reset on edits
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go func() {
 		_ = vault.WatchAndSync(ctx, ws.Path, vCfg.Path, meta.PublicKey, func(event, relPath string) {
+			resetInactivityTimer()
 			fmt.Printf("\r⚡ [%s] Auto-encrypted: %s\n> ", event, relPath)
 		})
 	}()
 
-	// 5. Launch editor
+	// 6. Launch editor
 	editor := vCfg.Editor
 	if editor == "" {
 		editor = cfg.DefaultEditor
@@ -342,11 +739,11 @@ func executeOpen(vaultName string) error {
 		fmt.Printf("📌 Editor launched (PID: %d).\n", proc.PID)
 	}
 
-	// 6. Interactive lock listener & timeout
+	// 7. Interactive lock listener & inactivity timeout
 	fmt.Println("\n=======================================================")
 	fmt.Printf("🛡️  SESSION ACTIVE: Vault '%s' is UNLOCKED in RAM.\n", vaultName)
 	if vCfg.TimeoutMinutes > 0 {
-		fmt.Printf("⏱️  Auto-lock timeout: %d minutes.\n", vCfg.TimeoutMinutes)
+		fmt.Printf("⏱️  Inactivity auto-lock timeout: %d minutes (resets on file saves).\n", vCfg.TimeoutMinutes)
 	}
 	fmt.Println("👉 Press Ctrl+C or type 'lock' / 'q' to safely close & wipe RAM.")
 	fmt.Println("=======================================================")
@@ -363,6 +760,7 @@ func executeOpen(vaultName string) error {
 				if scanner.Scan() {
 					text := strings.TrimSpace(scanner.Text())
 					if text != "" {
+						resetInactivityTimer()
 						inputChan <- text
 					}
 				} else {
@@ -370,11 +768,6 @@ func executeOpen(vaultName string) error {
 				}
 			}
 		}()
-	}
-
-	var timeoutTimer <-chan time.Time
-	if vCfg.TimeoutMinutes > 0 {
-		timeoutTimer = time.After(time.Duration(vCfg.TimeoutMinutes) * time.Minute)
 	}
 
 	var editorWait <-chan error
@@ -389,8 +782,8 @@ func executeOpen(vaultName string) error {
 		if input == "lock" || input == "q" || input == "exit" || input == "close" {
 			fmt.Println("\n🔒 Lock command received. Locking vault...")
 		}
-	case <-timeoutTimer:
-		fmt.Println("\n⏰ Session timeout reached! Automatically locking vault...")
+	case <-timeoutChan:
+		fmt.Printf("\n⏰ %d minutes of inactivity reached! Automatically locking vault...\n", vCfg.TimeoutMinutes)
 	case <-editorWait:
 		fmt.Println("\n🚪 Editor closed. Locking vault...")
 	}
@@ -457,6 +850,7 @@ var setupCmd = &cobra.Command{
 	Short:   "Interactive settings wizard (editor, timeout, passphrase, vaults)",
 	Long: `Interactive configuration wizard or direct CLI setter:
   grim setup                 # Interactive settings wizard
+  grim setup work            # Configure settings for vault 'work'
   grim setup editor vim      # Set global default editor to vim
   grim setup passwd work     # Change master passphrase for vault 'work'
   grim setup timeout 20      # Set default timeout for all vaults`,
@@ -869,6 +1263,31 @@ func copyExecutable(src, dst string) error {
 	return err
 }
 
+func expandPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	path = strings.Trim(path, "\"'")
+
+	if path == "" {
+		return "", fmt.Errorf("path cannot be empty")
+	}
+
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to expand home dir: %w", err)
+		}
+		if path == "~" {
+			path = home
+		} else {
+			path = filepath.Join(home, path[2:])
+		}
+	} else if strings.HasPrefix(path, "$") {
+		path = os.ExpandEnv(path)
+	}
+
+	return filepath.Abs(path)
+}
+
 func promptPassword(promptText string) (string, error) {
 	fmt.Print(promptText)
 
@@ -892,6 +1311,8 @@ func promptPassword(promptText string) (string, error) {
 
 func main() {
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(addCmd)
+	rootCmd.AddCommand(removeCmd)
 	rootCmd.AddCommand(openCmd)
 	rootCmd.AddCommand(lockCmd)
 	rootCmd.AddCommand(listCmd)

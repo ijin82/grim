@@ -53,12 +53,24 @@ make install
 
 ---
 
-### 2. Initialize a New Vault
+### 2. Initialize or Attach a Vault
 
+**Create a new vault:**
 ```bash
 grim init work ~/Documents/SecretGrimoire.enc
 ```
-You will be prompted to enter and confirm your master passphrase.
+
+**Or attach an existing vault (synced from Cloud/Dropbox/Git):**
+```bash
+# Auto-scan disk for existing Grim vaults:
+grim add
+
+# Or attach a specific folder directly:
+grim add work ~/Dropbox/SecretGrimoire.enc
+```
+
+> [!TIP]
+> **Smart Auto-Discovery:** Running `grim add` without arguments (or with a parent folder) performs an instant scan of the current directory `.` (up to 3 levels deep) and standard cloud paths (`~/Documents`, `~/Dropbox`, `~/Nextcloud`, `~/OneDrive`, `~/Sync`, `~/GDrive`, `~/Yandex.Disk`). It identifies vaults by their `.vault-meta.age` signature and presents an interactive menu to attach them with a single keystroke.
 
 ---
 
@@ -109,6 +121,9 @@ Choose option [0-5]:
 
 ### Direct CLI Commands
 ```bash
+# Interactive setup for a specific vault (editor & timeout):
+grim setup work
+
 # Set global default editor:
 grim setup editor vim
 grim setup editor code
@@ -119,7 +134,7 @@ grim setup passwd work
 # Set default auto-lock timeout (in minutes):
 grim setup timeout 20
 
-# Configure editor for a specific vault:
+# Directly set editor for a specific vault:
 grim setup work code
 ```
 
@@ -148,38 +163,50 @@ grim completion fish > ~/.config/fish/completions/grim.fish
 
 ---
 
-## ⚙️ Configuration File
-
-Configuration is saved in `~/.config/grim/config.yaml` (`%APPDATA%\grim\config.yaml` on Windows):
-
-```yaml
-default_vault: work
-default_editor: obsidian
-vaults:
-  work:
-    path: /home/user/Documents/SecretGrimoire.enc
-    editor: obsidian
-    timeout_minutes: 30
-  servers:
-    path: /home/user/Dropbox/ServerKeys.enc
-    editor: vim
-    timeout_minutes: 15
-  personal:
-    path: /home/user/Dropbox/PersonalVault.enc
-    editor: code
-    timeout_minutes: 20
 ```
+
+---
+
+## 💻 Cross-Platform Support & OS Nuances
+
+Grim is written in pure Go without CGO dependencies and runs natively on **Linux**, **macOS**, and **Windows**.
+
+| Feature | 🐧 Linux | 🍎 macOS | 🪟 Windows |
+| :--- | :--- | :--- | :--- |
+| **Config Location** | `~/.config/grim/config.yaml` | `~/.config/grim/config.yaml` | `%APPDATA%\grim\config.yaml` |
+| **RAM / Cache Path** | `~/.cache/grim/grim-<vault>` | `~/Library/Caches/grim/grim-<vault>` | `%LOCALAPPDATA%\grim\cache\grim-<vault>` |
+| **Workspace Permissions** | `0700` (Owner-only) | `0700` (Owner-only) | User profile ACLs |
+| **Obsidian Integration** | Native, Flatpak & `xdg-open` | `open "obsidian://open?..."` | `cmd.exe /c start "obsidian://..."` |
+| **VS Code Command** | `code <path>` | `code <path>` | `code.cmd <path>` |
+| **Terminal Editors** | `vim`, `nvim`, `nano`, `micro`, `hx` | Terminal / iTerm2 (`vim`, `nvim`) | PowerShell / Git Bash (`vim`, `nvim`) |
+
+### 🍎 macOS Notes:
+* **VS Code CLI:** If `code` isn't found in your Terminal, open VS Code, press `Cmd+Shift+P`, and run **"Shell Command: Install 'code' command in PATH"**.
+* **Obsidian:** Works automatically out of the box via macOS URL scheme registration.
+* **Homebrew / PATH:** Run `./grim install` or `make install` to place the binary in `~/.local/bin` or `/usr/local/bin`.
+
+### 🪟 Windows Notes:
+* **PowerShell Autocompletion:**
+  ```powershell
+  grim completion powershell | Out-String | Invoke-Expression
+  ```
+  *(To make permanent, add the line above to your `$PROFILE`)*.
+* **File Locking & Antivirus:** Grim uses a 50ms debounced atomic writer (`.tmp` + atomic rename) to avoid file lock collisions with Windows Defender or background indexing services.
+* **Terminal Vim:** Terminal editors run natively in Windows Terminal, PowerShell, and Git Bash.
 
 ---
 
 ## 📋 Commands Summary
 
-- `grim` / `grim open [name]` — Unlock vault to RAM, start sync, launch editor.
-- `grim init <name> <path>` — Create a new encrypted vault.
-- `grim lock [name]` — Force lock and wipe RAM workspace.
+- `grim` / `grim open [vault]` — Unlock vault to RAM, start sync, launch editor.
+- `grim init <vault> <dir>` — Create a new encrypted vault.
+- `grim add [vault] [dir]` — Attach existing vault or auto-discover from disk.
+- `grim remove <vault>` — Remove vault from config (`rm`, `delete`, `forget`).
+- `grim lock [vault]` — Force lock and wipe RAM workspace.
 - `grim list` — List all configured vaults and their status.
 - `grim status` — View active unlocked vaults.
-- `grim setup` — Full interactive configuration wizard.
-- `grim set-default <name>` — Set the default vault.
+- `grim setup` — Global interactive configuration wizard (editor, timeout, passphrase).
+- `grim setup [vault]` — Interactive settings for a specific vault.
+- `grim set-default <vault>` — Set the default vault.
 - `grim install` — Install `grim` binary into system `$PATH`.
 - `grim completion [bash|zsh|fish|powershell]` — Generate shell autocompletion script.

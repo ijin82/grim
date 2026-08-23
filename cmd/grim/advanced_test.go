@@ -18,15 +18,33 @@ import (
 	"github.com/ijin/crypto-notes/pkg/vault"
 )
 
-// Test 1: Full UTF-8 & Cyrillic structure verification on vault5
+// Test 1: Full UTF-8 & Cyrillic structure verification
 func Test1_UnicodeAndCyrillicFidelity(t *testing.T) {
-	vaultPath := "/home/ijin/crypto-notes-tests/vault5"
+	tempDir := t.TempDir()
+	vaultPath := filepath.Join(tempDir, "cyrillic-vault.enc")
 	passphrase := "qwe123QWE!@#"
+
+	if err := vault.Init(vaultPath, "CyrillicVault", passphrase); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
 
 	meta, err := vault.VerifyPassphrase(vaultPath, passphrase)
 	if err != nil {
 		t.Fatalf("VerifyPassphrase failed: %v", err)
 	}
+
+	// Create Cyrillic test notes
+	_ = os.MkdirAll(filepath.Join(vaultPath, "стихи"), 0700)
+	_ = os.MkdirAll(filepath.Join(vaultPath, "цитаты"), 0700)
+	_ = os.MkdirAll(filepath.Join(vaultPath, "примеры кода go"), 0700)
+
+	pushkinText := "# У лукоморья дуб зелёный\n*Александр Пушкин*"
+	encPushkin, _ := crypto.EncryptWithKey([]byte(pushkinText), meta.PublicKey)
+	_ = os.WriteFile(filepath.Join(vaultPath, "стихи", "пушкин_у_лукоморья.md.age"), encPushkin, 0600)
+
+	pikeText := "# Роб Пайк\n> Clear is better than clever."
+	encPike, _ := crypto.EncryptWithKey([]byte(pikeText), meta.PublicKey)
+	_ = os.WriteFile(filepath.Join(vaultPath, "цитаты", "роб_пайк.md.age"), encPike, 0600)
 
 	ws, err := ramdisk.New("test1-cyrillic")
 	if err != nil {
@@ -35,7 +53,7 @@ func Test1_UnicodeAndCyrillicFidelity(t *testing.T) {
 	defer func() { _ = ws.Destroy() }()
 
 	if err := vault.Unlock(vaultPath, ws.Path, meta); err != nil {
-		t.Fatalf("Unlock vault5 failed: %v", err)
+		t.Fatalf("Unlock vault failed: %v", err)
 	}
 
 	// Verify all 3 folders exist

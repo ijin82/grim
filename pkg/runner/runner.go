@@ -96,7 +96,7 @@ func getEditorLogFile() *os.File {
 	if err != nil {
 		return nil
 	}
-	logDir := filepath.Join(home, ".config", "cryptovault")
+	logDir := filepath.Join(home, ".config", "grim")
 	_ = os.MkdirAll(logDir, 0700)
 	f, err := os.OpenFile(filepath.Join(logDir, "editor.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
@@ -105,7 +105,7 @@ func getEditorLogFile() *os.File {
 	return f
 }
 
-// resolveEditorCommand finds the right executable and arguments.
+// resolveEditorCommand finds the right executable and arguments across Linux, macOS, and Windows.
 func resolveEditorCommand(editorName string, targetPath string) (string, []string) {
 	lower := strings.ToLower(editorName)
 
@@ -113,18 +113,23 @@ func resolveEditorCommand(editorName string, targetPath string) (string, []strin
 	case "obsidian":
 		obsidianURI := fmt.Sprintf("obsidian://open?path=%s", url.QueryEscape(targetPath))
 
+		if runtime.GOOS == "darwin" {
+			// macOS open command
+			return "open", []string{obsidianURI}
+		}
+
+		if runtime.GOOS == "windows" {
+			// Windows default URI handler
+			return "cmd", []string{"/c", "start", "", obsidianURI}
+		}
+
+		// Linux: look for binary, xdg-open, or flatpak
 		if path, err := exec.LookPath("obsidian"); err == nil {
 			return path, []string{obsidianURI}
 		}
-		if runtime.GOOS == "darwin" {
-			// macOS app bundle
-			return "open", []string{obsidianURI}
-		}
-		// Try xdg-open on Linux first if available
 		if path, err := exec.LookPath("xdg-open"); err == nil {
 			return path, []string{obsidianURI}
 		}
-		// Flatpak fallback on Linux
 		if path, err := exec.LookPath("flatpak"); err == nil {
 			return path, []string{"run", "--filesystem=" + targetPath, "md.obsidian.Obsidian", obsidianURI}
 		}
@@ -133,6 +138,12 @@ func resolveEditorCommand(editorName string, targetPath string) (string, []strin
 	case "code", "vscode":
 		if path, err := exec.LookPath("code"); err == nil {
 			return path, []string{targetPath}
+		}
+		if runtime.GOOS == "windows" {
+			// Check code.cmd
+			if path, err := exec.LookPath("code.cmd"); err == nil {
+				return path, []string{targetPath}
+			}
 		}
 		return "code", []string{targetPath}
 
