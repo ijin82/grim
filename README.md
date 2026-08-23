@@ -170,7 +170,7 @@ Grim is written in pure Go without CGO dependencies and runs natively on **Linux
 | Feature | 🐧 Linux | 🍎 macOS | 🪟 Windows |
 | :--- | :--- | :--- | :--- |
 | **Config Location** | `~/.config/grim/config.yaml` | `~/.config/grim/config.yaml` | `%APPDATA%\grim\config.yaml` |
-| **RAM / Cache Path** | `~/.cache/grim/grim-<vault>` | `~/Library/Caches/grim/grim-<vault>` | `%LOCALAPPDATA%\grim\cache\grim-<vault>` |
+| **RAM Workspace Path** | `/run/user/$UID/grim` (`tmpfs` RAM) | `~/Library/Caches/grim` | `%LOCALAPPDATA%\grim\cache` |
 | **Workspace Permissions** | `0700` (Owner-only) | `0700` (Owner-only) | User profile ACLs |
 | **Obsidian Integration** | Native, Flatpak & `xdg-open` | `open "obsidian://open?..."` | `cmd.exe /c start "obsidian://..."` |
 | **VS Code Command** | `code <path>` | `code <path>` | `code.cmd <path>` |

@@ -23,7 +23,7 @@ import (
 	"golang.org/x/term"
 )
 
-var Version = "0.1.0"
+var Version = "0.1.1"
 
 var rootCmd = &cobra.Command{
 	Use:          "grim [vault]",
@@ -1310,6 +1310,13 @@ func promptPassword(promptText string) (string, error) {
 }
 
 func main() {
+	// Auto-cleanup any stale orphaned RAM workspaces from previous crashes
+	if cleaned := ramdisk.CleanupStaleWorkspaces(); len(cleaned) > 0 {
+		for _, p := range cleaned {
+			fmt.Printf("🛡️  Securely wiped stale unencrypted workspace from previous session: %s\n", p)
+		}
+	}
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(removeCmd)

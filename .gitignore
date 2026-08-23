@@ -45,3 +45,5 @@ scratch/
 *.enc/
 *.age
 *.key
+.grim-lock
+*.lock
