@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ijin/crypto-notes/pkg/ramdisk"
-	"github.com/ijin/crypto-notes/pkg/vault"
+	"github.com/ijin82/grim/pkg/ramdisk"
+	"github.com/ijin82/grim/pkg/vault"
 )
 
 func TestEndToEndLifecycle(t *testing.T) {

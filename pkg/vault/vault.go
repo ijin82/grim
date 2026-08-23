@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/ijin/crypto-notes/pkg/crypto"
-	"github.com/ijin/crypto-notes/pkg/ramdisk"
+	"github.com/ijin82/grim/pkg/crypto"
+	"github.com/ijin82/grim/pkg/ramdisk"
 )
 
 const (

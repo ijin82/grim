@@ -15,15 +15,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ijin/crypto-notes/pkg/config"
-	"github.com/ijin/crypto-notes/pkg/ramdisk"
-	"github.com/ijin/crypto-notes/pkg/runner"
-	"github.com/ijin/crypto-notes/pkg/vault"
+	"github.com/ijin82/grim/pkg/config"
+	"github.com/ijin82/grim/pkg/ramdisk"
+	"github.com/ijin82/grim/pkg/runner"
+	"github.com/ijin82/grim/pkg/vault"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
 
-var Version = "0.1.4"
+var Version = "0.1.5"
 
 var rootCmd = &cobra.Command{
 	Use:          "grim [vault]",

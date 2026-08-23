@@ -1,4 +1,4 @@
-module github.com/ijin/crypto-notes
+module github.com/ijin82/grim
 
 go 1.26.5
 

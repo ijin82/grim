@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ijin/crypto-notes/pkg/crypto"
-	"github.com/ijin/crypto-notes/pkg/ramdisk"
-	"github.com/ijin/crypto-notes/pkg/vault"
+	"github.com/ijin82/grim/pkg/crypto"
+	"github.com/ijin82/grim/pkg/ramdisk"
+	"github.com/ijin82/grim/pkg/vault"
 )
 
 // Test 1: Full UTF-8 & Cyrillic structure verification
