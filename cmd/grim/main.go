@@ -23,7 +23,7 @@ import (
 	"golang.org/x/term"
 )
 
-var Version = "0.1.2"
+var Version = "0.1.3"
 
 var rootCmd = &cobra.Command{
 	Use:          "grim [vault]",
