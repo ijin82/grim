@@ -23,14 +23,14 @@ import (
 	"golang.org/x/term"
 )
 
-var Version = "0.1.5"
+var Version = "0.1.6"
 
 var rootCmd = &cobra.Command{
 	Use:          "grim [vault]",
 	Version:      Version,
 	SilenceUsage: true,
 	Short:        "Grim (Grimoire) — Secure Encrypted Markdown Note Vaults for Obsidian & text editors",
-	Long: `📖 Grim (Grimoire) is a fast, secure CLI tool for managing encrypted markdown vaults.
+	Long: `Grim (Grimoire) is a fast, secure CLI tool for managing encrypted markdown vaults.
 All notes are encrypted with filippo.io/age (X25519 Master Key Architecture + Scrypt KDF).
 When unlocked, notes live in an isolated RAM workspace with live auto-sync.
 
@@ -427,7 +427,7 @@ var openCmd = &cobra.Command{
 var lockCmd = &cobra.Command{
 	Use:   "lock [vault]",
 	Short: "Force lock a vault and wipe its RAM workspace",
-	Args:    cobra.MaximumNArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig("")
 		if err != nil {

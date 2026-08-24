@@ -205,6 +205,48 @@ func Test3_DeepNestedFolderAndPrune(t *testing.T) {
 	if _, err := os.Stat(encNote); !os.IsNotExist(err) {
 		t.Fatalf("Expected %s to be deleted from encrypted vault", encNote)
 	}
+
+	// Create a folder with multiple notes: poems/verse1.md, poems/verse2.md
+	poemsDir := filepath.Join(ws.Path, "стихи")
+	_ = os.MkdirAll(poemsDir, 0700)
+	_ = os.WriteFile(filepath.Join(poemsDir, "verse1.md"), []byte("Строка 1"), 0600)
+	_ = os.WriteFile(filepath.Join(poemsDir, "verse2.md"), []byte("Строка 2"), 0600)
+	if err := vault.FullSyncToVault(ws.Path, vaultPath, meta.PublicKey); err != nil {
+		t.Fatalf("FullSyncToVault failed: %v", err)
+	}
+
+	encPoem1 := filepath.Join(vaultPath, "стихи", "verse1.md.age")
+	if _, err := os.Stat(encPoem1); os.IsNotExist(err) {
+		t.Fatalf("Expected encrypted poem at %s", encPoem1)
+	}
+
+	// Delete entire folder "стихи" in RAM and remove from vault
+	_ = os.RemoveAll(poemsDir)
+	if err := vault.RemoveFileFromVault(poemsDir, ws.Path, vaultPath); err != nil {
+		t.Fatalf("RemoveFileFromVault for directory failed: %v", err)
+	}
+
+	encPoemsDir := filepath.Join(vaultPath, "стихи")
+	if _, err := os.Stat(encPoemsDir); !os.IsNotExist(err) {
+		t.Fatalf("Expected directory %s to be deleted from encrypted vault", encPoemsDir)
+	}
+
+	// Re-lock and unlock into a new workspace, verifying deleted folder does NOT resurrect
+	if err := vault.Lock(ws.Path, vaultPath, meta.PublicKey); err != nil {
+		t.Fatalf("Lock failed: %v", err)
+	}
+
+	wsReopened, _ := ramdisk.New("test3-reopen")
+	defer func() { _ = wsReopened.Destroy() }()
+
+	if err := vault.Unlock(vaultPath, wsReopened.Path, meta); err != nil {
+		t.Fatalf("Reopen unlock failed: %v", err)
+	}
+
+	reopenedPoemsDir := filepath.Join(wsReopened.Path, "стихи")
+	if _, err := os.Stat(reopenedPoemsDir); !os.IsNotExist(err) {
+		t.Fatalf("Bug detected: deleted folder %s resurrected upon reopen!", reopenedPoemsDir)
+	}
 }
 
 // Test 4: Atomic Passphrase Re-encryption on a multi-file vault
@@ -335,5 +377,166 @@ func Test5_LiveWatcherConcurrencyStress(t *testing.T) {
 		if _, err := os.Stat(encPath); os.IsNotExist(err) {
 			t.Fatalf("Expected encrypted note %s to exist after concurrent writes", encPath)
 		}
+	}
+}
+
+// Test 6: Folder Copying and Nested Tree Synchronization
+func Test6_FolderCopyAndNestedSync(t *testing.T) {
+	tempDir := t.TempDir()
+	vaultPath := filepath.Join(tempDir, "copy-vault.enc")
+	passphrase := "copy-pass-2026"
+
+	if err := vault.Init(vaultPath, "CopyVault", passphrase); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	meta, err := vault.VerifyPassphrase(vaultPath, passphrase)
+	if err != nil {
+		t.Fatalf("Verify failed: %v", err)
+	}
+
+	ws, _ := ramdisk.New("test6-copy")
+	defer func() { _ = ws.Destroy() }()
+
+	if err := vault.Unlock(vaultPath, ws.Path, meta); err != nil {
+		t.Fatalf("Unlock failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = vault.WatchAndSync(ctx, ws.Path, vaultPath, meta.PublicKey, nil)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Create source tree: projects/alpha/docs/spec.md
+	srcDir := filepath.Join(ws.Path, "projects", "alpha", "docs")
+	_ = os.MkdirAll(srcDir, 0700)
+	_ = os.WriteFile(filepath.Join(srcDir, "spec.md"), []byte("# Spec Alpha v1.0"), 0600)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Simulate copying "alpha" folder to "beta": projects/beta/docs/spec.md
+	dstDir := filepath.Join(ws.Path, "projects", "beta", "docs")
+	_ = os.MkdirAll(dstDir, 0700)
+	_ = os.WriteFile(filepath.Join(dstDir, "spec.md"), []byte("# Spec Beta v1.0"), 0600)
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Lock and reconcile
+	cancel()
+	if err := vault.Lock(ws.Path, vaultPath, meta.PublicKey); err != nil {
+		t.Fatalf("Lock failed: %v", err)
+	}
+
+	// Verify both encrypted trees exist on disk
+	encAlpha := filepath.Join(vaultPath, "projects", "alpha", "docs", "spec.md.age")
+	encBeta := filepath.Join(vaultPath, "projects", "beta", "docs", "spec.md.age")
+
+	if _, err := os.Stat(encAlpha); os.IsNotExist(err) {
+		t.Fatalf("Expected encrypted alpha at %s", encAlpha)
+	}
+	if _, err := os.Stat(encBeta); os.IsNotExist(err) {
+		t.Fatalf("Expected encrypted beta at %s", encBeta)
+	}
+
+	// Reopen in a new workspace and verify content fidelity
+	wsReopen, _ := ramdisk.New("test6-reopen")
+	defer func() { _ = wsReopen.Destroy() }()
+
+	if err := vault.Unlock(vaultPath, wsReopen.Path, meta); err != nil {
+		t.Fatalf("Unlock failed: %v", err)
+	}
+
+	betaContent, err := os.ReadFile(filepath.Join(wsReopen.Path, "projects", "beta", "docs", "spec.md"))
+	if err != nil {
+		t.Fatalf("Failed to read beta spec in reopened vault: %v", err)
+	}
+	if string(betaContent) != "# Spec Beta v1.0" {
+		t.Fatalf("Content mismatch! Got: %s, Want: # Spec Beta v1.0", string(betaContent))
+	}
+}
+
+// Test 7: Redundant Saves Deduplication via Content Hashing
+func Test7_ContentHashDeduplication(t *testing.T) {
+	tempDir := t.TempDir()
+	vaultPath := filepath.Join(tempDir, "dedup-vault.enc")
+	passphrase := "dedup-pass-2026"
+
+	if err := vault.Init(vaultPath, "DedupVault", passphrase); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	meta, err := vault.VerifyPassphrase(vaultPath, passphrase)
+	if err != nil {
+		t.Fatalf("Verify failed: %v", err)
+	}
+
+	ws, _ := ramdisk.New("test7-dedup")
+	defer func() { _ = ws.Destroy() }()
+
+	if err := vault.Unlock(vaultPath, ws.Path, meta); err != nil {
+		t.Fatalf("Unlock failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var syncEvents int
+	var mu sync.Mutex
+
+	go func() {
+		_ = vault.WatchAndSync(ctx, ws.Path, vaultPath, meta.PublicKey, func(event, path string) {
+			mu.Lock()
+			syncEvents++
+			mu.Unlock()
+		})
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	testFile := filepath.Join(ws.Path, "autosave.md")
+	content := []byte("Initial text payload")
+	_ = os.WriteFile(testFile, content, 0600)
+
+	// Wait for first sync
+	time.Sleep(150 * time.Millisecond)
+
+	mu.Lock()
+	initialSyncs := syncEvents
+	mu.Unlock()
+
+	if initialSyncs == 0 {
+		t.Fatalf("Expected initial sync event for new file")
+	}
+
+	// Now simulate Obsidian or editor repeatedly saving the identical content (e.g. 10 times)
+	for i := 0; i < 10; i++ {
+		_ = os.WriteFile(testFile, content, 0600)
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	mu.Lock()
+	redundantSyncs := syncEvents
+	mu.Unlock()
+
+	if redundantSyncs > initialSyncs {
+		t.Fatalf("Redundant sync detected! Content was identical, but got %d additional sync events", redundantSyncs-initialSyncs)
+	}
+
+	// Now actually change the content
+	_ = os.WriteFile(testFile, []byte("Updated text payload with changes"), 0600)
+	time.Sleep(150 * time.Millisecond)
+
+	mu.Lock()
+	updatedSyncs := syncEvents
+	mu.Unlock()
+
+	if updatedSyncs <= initialSyncs {
+		t.Fatalf("Expected sync event after real content change, but got none")
 	}
 }

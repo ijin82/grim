@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -158,45 +159,170 @@ func Unlock(vaultPath string, ramPath string, meta *Meta) error {
 	return err
 }
 
+// SyncTracker tracks the SHA-256 content hashes of files in RAM to avoid redundant re-encryptions.
+type SyncTracker struct {
+	mu     sync.Mutex
+	hashes map[string][32]byte
+}
+
+// NewSyncTracker initializes a thread-safe content hash tracker.
+func NewSyncTracker() *SyncTracker {
+	return &SyncTracker{
+		hashes: make(map[string][32]byte),
+	}
+}
+
+func (t *SyncTracker) Get(relPath string) ([32]byte, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	h, ok := t.hashes[relPath]
+	return h, ok
+}
+
+func (t *SyncTracker) Set(relPath string, hash [32]byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.hashes[relPath] = hash
+}
+
+func (t *SyncTracker) Delete(relPath string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.hashes, relPath)
+}
+
 // SyncFileToVault encrypts a single file from RAM into the vault storage using the Master Key.
 func SyncFileToVault(ramFilePath string, ramRoot string, vaultRoot string, pubKey string) error {
+	_, err := syncFileWithTracker(ramFilePath, ramRoot, vaultRoot, pubKey, nil)
+	return err
+}
+
+// syncFileWithTracker returns true if file was actually encrypted and written to disk, or false if skipped due to identical content hash.
+func syncFileWithTracker(ramFilePath string, ramRoot string, vaultRoot string, pubKey string, tracker *SyncTracker) (bool, error) {
 	relPath, err := filepath.Rel(ramRoot, ramFilePath)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if relPath == "." || strings.HasPrefix(relPath, ".") && !strings.HasPrefix(relPath, ".obsidian") {
 		// Ignore hidden files except .obsidian settings
 		if strings.HasPrefix(relPath, ".") && relPath != ".obsidian" && !strings.HasPrefix(relPath, ".obsidian/") {
-			return nil
+			return false, nil
 		}
 	}
 
-	// Target encrypted file path in vault
-	vaultFilePath := filepath.Join(vaultRoot, relPath+AgeExt)
-	if err := os.MkdirAll(filepath.Dir(vaultFilePath), 0700); err != nil {
-		return err
+	data, err := os.ReadFile(ramFilePath)
+	if err != nil {
+		return false, err
 	}
 
-	return crypto.EncryptFileWithKey(ramFilePath, vaultFilePath, pubKey)
+	currentHash := sha256.Sum256(data)
+	vaultFilePath := filepath.Join(vaultRoot, relPath+AgeExt)
+
+	// Deduplication: if content hash matches existing state and target .age exists, skip re-encryption!
+	if tracker != nil {
+		if prevHash, exists := tracker.Get(relPath); exists && prevHash == currentHash {
+			if _, err := os.Stat(vaultFilePath); err == nil {
+				return false, nil
+			}
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(vaultFilePath), 0700); err != nil {
+		return false, err
+	}
+
+	if err := crypto.EncryptFileWithKey(ramFilePath, vaultFilePath, pubKey); err != nil {
+		return false, err
+	}
+
+	if tracker != nil {
+		tracker.Set(relPath, currentHash)
+	}
+
+	return true, nil
 }
 
-// RemoveFileFromVault removes the encrypted counterpart of a deleted RAM file.
+// RemoveFileFromVault removes the encrypted counterpart of a deleted RAM file or directory.
 func RemoveFileFromVault(ramFilePath string, ramRoot string, vaultRoot string) error {
 	relPath, err := filepath.Rel(ramRoot, ramFilePath)
 	if err != nil {
 		return err
 	}
 
-	vaultFilePath := filepath.Join(vaultRoot, relPath+AgeExt)
-	if err := os.Remove(vaultFilePath); err != nil && !os.IsNotExist(err) {
-		return err
+	if relPath == "." || relPath == "" || relPath == MetaFileName || relPath == ".git" {
+		return nil
 	}
 
-	vaultDir := filepath.Dir(vaultFilePath)
-	_ = removeEmptyDirs(vaultDir, vaultRoot)
+	// 1. If a directory with this relative path exists in vault, remove it and all its contents
+	vaultDirPath := filepath.Join(vaultRoot, relPath)
+	if fi, err := os.Stat(vaultDirPath); err == nil && fi.IsDir() {
+		_ = os.RemoveAll(vaultDirPath)
+	}
+
+	// 2. If an encrypted file with this relative path exists in vault, remove it
+	vaultAgePath := filepath.Join(vaultRoot, relPath+AgeExt)
+	if err := os.Remove(vaultAgePath); err != nil && !os.IsNotExist(err) {
+		// Ignore error if it didn't exist as a direct file
+	}
+
+	// 3. If an unencrypted file (e.g. .gitignore) exists in vault, remove it
+	_ = os.Remove(vaultDirPath)
+
+	// 4. Clean up empty parent directories up to vaultRoot
+	vaultParent := filepath.Dir(vaultAgePath)
+	_ = removeEmptyDirs(vaultParent, vaultRoot)
 
 	return nil
+}
+
+// PruneDeletedFromVault walks vaultRoot and removes any files or folders that no longer exist in ramRoot.
+func PruneDeletedFromVault(ramRoot string, vaultRoot string) error {
+	return filepath.WalkDir(vaultRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(vaultRoot, path)
+		if err != nil || relPath == "." || relPath == "" || relPath == MetaFileName {
+			return nil
+		}
+
+		// Skip .git repository
+		if relPath == ".git" || strings.HasPrefix(relPath, ".git/") || strings.HasPrefix(relPath, ".git\\") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if d.IsDir() {
+			// If directory does not exist in RAM, remove entire directory tree in vault
+			ramDirPath := filepath.Join(ramRoot, relPath)
+			if _, err := os.Stat(ramDirPath); os.IsNotExist(err) {
+				_ = os.RemoveAll(path)
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// If it's a file
+		if strings.HasSuffix(relPath, AgeExt) {
+			decRelPath := strings.TrimSuffix(relPath, AgeExt)
+			ramFilePath := filepath.Join(ramRoot, decRelPath)
+			if _, err := os.Stat(ramFilePath); os.IsNotExist(err) {
+				_ = os.Remove(path)
+			}
+		} else {
+			// Non-age file
+			ramFilePath := filepath.Join(ramRoot, relPath)
+			if _, err := os.Stat(ramFilePath); os.IsNotExist(err) {
+				_ = os.Remove(path)
+			}
+		}
+
+		return nil
+	})
 }
 
 // FullSyncToVault walks ramPath and encrypts all files to vaultPath using Master Key.
@@ -230,14 +356,25 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 	}
 	defer watcher.Close()
 
-	// Add all subdirectories to watcher
+	tracker := NewSyncTracker()
+
+	// Add all subdirectories to watcher and seed initial SHA-256 content hashes
 	_ = filepath.WalkDir(ramRoot, func(path string, d fs.DirEntry, err error) error {
-		if err == nil && d != nil && d.IsDir() {
+		if err == nil && d != nil {
 			relPath, _ := filepath.Rel(ramRoot, path)
 			if relPath == ".git" || strings.HasPrefix(relPath, ".git/") || strings.HasPrefix(relPath, ".git\\") {
-				return filepath.SkipDir
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
 			}
-			_ = watcher.Add(path)
+			if d.IsDir() {
+				_ = watcher.Add(path)
+			} else {
+				if data, err := os.ReadFile(path); err == nil {
+					tracker.Set(relPath, sha256.Sum256(data))
+				}
+			}
 		}
 		return nil
 	})
@@ -255,10 +392,32 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 				return nil
 			}
 
-			// If a new directory is created, watch it
+			// If a new directory is created/renamed, watch it recursively and sync any files inside
 			if fi, err := os.Stat(event.Name); err == nil && fi.IsDir() {
 				if event.Has(fsnotify.Create) {
-					_ = watcher.Add(event.Name)
+					_ = filepath.WalkDir(event.Name, func(p string, d fs.DirEntry, err error) error {
+						if err == nil && d != nil {
+							relPath, _ := filepath.Rel(ramRoot, p)
+							if relPath == ".git" || strings.HasPrefix(relPath, ".git/") || strings.HasPrefix(relPath, ".git\\") {
+								if d.IsDir() {
+									return filepath.SkipDir
+								}
+								return nil
+							}
+							if d.IsDir() {
+								_ = watcher.Add(p)
+							} else {
+								written, err := syncFileWithTracker(p, ramRoot, vaultRoot, pubKey, tracker)
+								if err == nil && written {
+									if onSync != nil {
+										rel, _ := filepath.Rel(ramRoot, p)
+										onSync("SYNC", rel)
+									}
+								}
+							}
+						}
+						return nil
+					})
 				}
 				continue
 			}
@@ -276,7 +435,8 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 
 				if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
 					if _, err := os.Stat(filePath); err == nil {
-						if err := SyncFileToVault(filePath, ramRoot, vaultRoot, pubKey); err == nil {
+						written, err := syncFileWithTracker(filePath, ramRoot, vaultRoot, pubKey, tracker)
+						if err == nil && written {
 							if onSync != nil {
 								rel, _ := filepath.Rel(ramRoot, filePath)
 								onSync("SYNC", rel)
@@ -284,9 +444,10 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 						}
 					}
 				} else if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+					rel, _ := filepath.Rel(ramRoot, filePath)
+					tracker.Delete(rel)
 					if err := RemoveFileFromVault(filePath, ramRoot, vaultRoot); err == nil {
 						if onSync != nil {
-							rel, _ := filepath.Rel(ramRoot, filePath)
 							onSync("REMOVE", rel)
 						}
 					}
@@ -339,7 +500,7 @@ func ChangePassphrase(vaultPath string, oldPassphrase string, newPassphrase stri
 	return nil
 }
 
-// Lock performs a final full sync from RAM to Vault and securely destroys the RAM workspace.
+// Lock performs a final full sync from RAM to Vault, prunes deleted items, and securely destroys the RAM workspace.
 func Lock(ramPath string, vaultPath string, pubKey string) error {
 	if _, err := os.Stat(ramPath); os.IsNotExist(err) {
 		return nil
@@ -350,12 +511,34 @@ func Lock(ramPath string, vaultPath string, pubKey string) error {
 		return fmt.Errorf("failed to complete final sync before locking: %w", err)
 	}
 
-	// 2. Securely wipe RAM workspace
+	// 2. Prune any files or directories in vault that were deleted in RAM
+	if err := PruneDeletedFromVault(ramPath, vaultPath); err != nil {
+		return fmt.Errorf("failed to prune deleted files before locking: %w", err)
+	}
+
+	// 3. Clean empty directories in vault
+	_ = cleanEmptyVaultDirs(vaultPath)
+
+	// 4. Securely wipe RAM workspace
 	if err := ramdisk.WipeAndRemove(ramPath); err != nil {
 		return fmt.Errorf("failed to securely wipe RAM workspace: %w", err)
 	}
 
 	return nil
+}
+
+func cleanEmptyVaultDirs(vaultRoot string) error {
+	return filepath.WalkDir(vaultRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || !d.IsDir() || path == vaultRoot {
+			return nil
+		}
+		relPath, _ := filepath.Rel(vaultRoot, path)
+		if relPath == ".git" || strings.HasPrefix(relPath, ".git/") || strings.HasPrefix(relPath, ".git\\") {
+			return filepath.SkipDir
+		}
+		_ = removeEmptyDirs(path, vaultRoot)
+		return nil
+	})
 }
 
 func copyFile(src, dst string) error {
