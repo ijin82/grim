@@ -59,7 +59,7 @@ func TestVaultLifecycle(t *testing.T) {
 
 	syncChan := make(chan string, 10)
 	go func() {
-		_ = WatchAndSync(ctx, ramPath, vaultPath, meta.PublicKey, func(event, path string) {
+		_ = WatchAndSync(ctx, ramPath, vaultPath, meta.PublicKey, nil, func(event, path string) {
 			syncChan <- path
 		})
 	}()

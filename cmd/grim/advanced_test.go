@@ -340,7 +340,7 @@ func Test5_LiveWatcherConcurrencyStress(t *testing.T) {
 	var mu sync.Mutex
 
 	go func() {
-		_ = vault.WatchAndSync(ctx, ws.Path, vaultPath, meta.PublicKey, func(event, path string) {
+		_ = vault.WatchAndSync(ctx, ws.Path, vaultPath, meta.PublicKey, nil, func(event, path string) {
 			mu.Lock()
 			syncCount++
 			mu.Unlock()
@@ -406,7 +406,7 @@ func Test6_FolderCopyAndNestedSync(t *testing.T) {
 	defer cancel()
 
 	go func() {
-		_ = vault.WatchAndSync(ctx, ws.Path, vaultPath, meta.PublicKey, nil)
+		_ = vault.WatchAndSync(ctx, ws.Path, vaultPath, meta.PublicKey, nil, nil)
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -488,7 +488,7 @@ func Test7_ContentHashDeduplication(t *testing.T) {
 	var mu sync.Mutex
 
 	go func() {
-		_ = vault.WatchAndSync(ctx, ws.Path, vaultPath, meta.PublicKey, func(event, path string) {
+		_ = vault.WatchAndSync(ctx, ws.Path, vaultPath, meta.PublicKey, nil, func(event, path string) {
 			mu.Lock()
 			syncEvents++
 			mu.Unlock()
@@ -538,5 +538,90 @@ func Test7_ContentHashDeduplication(t *testing.T) {
 
 	if updatedSyncs <= initialSyncs {
 		t.Fatalf("Expected sync event after real content change, but got none")
+	}
+}
+
+// Test 8: Exit & Lock without modifications produces ZERO changes to .age files on disk
+func Test8_ExitWithoutChangesProducesZeroGitDiff(t *testing.T) {
+	tempDir := t.TempDir()
+	vaultPath := filepath.Join(tempDir, "git-diff-vault.enc")
+	passphrase := "git-diff-pass-2026"
+
+	if err := vault.Init(vaultPath, "GitDiffVault", passphrase); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	meta, err := vault.VerifyPassphrase(vaultPath, passphrase)
+	if err != nil {
+		t.Fatalf("Verify failed: %v", err)
+	}
+
+	// 1. Create 5 initial notes in vault
+	wsSetup, _ := ramdisk.New("test8-setup")
+	_ = vault.Unlock(vaultPath, wsSetup.Path, meta)
+	for i := 1; i <= 5; i++ {
+		_ = os.WriteFile(filepath.Join(wsSetup.Path, fmt.Sprintf("note_%d.md", i)), []byte(fmt.Sprintf("Static Note Content %d", i)), 0600)
+	}
+	_ = vault.Lock(wsSetup.Path, vaultPath, meta.PublicKey)
+	_ = wsSetup.Destroy()
+
+	// 2. Record exact SHA-256 of encrypted .age files on disk
+	initialEncHashes := make(map[string][32]byte)
+	for i := 1; i <= 5; i++ {
+		encFile := filepath.Join(vaultPath, fmt.Sprintf("note_%d.md.age", i))
+		data, err := os.ReadFile(encFile)
+		if err != nil {
+			t.Fatalf("Failed to read initial enc file %s: %v", encFile, err)
+		}
+		initialEncHashes[encFile] = sha256.Sum256(data)
+	}
+
+	// 3. Open session (simulate user opening grim, reading notes, and editing ONLY note_3.md)
+	wsSession, _ := ramdisk.New("test8-session")
+	defer func() { _ = wsSession.Destroy() }()
+
+	if err := vault.Unlock(vaultPath, wsSession.Path, meta); err != nil {
+		t.Fatalf("Unlock failed: %v", err)
+	}
+
+	tracker := vault.NewSyncTracker()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = vault.WatchAndSync(ctx, wsSession.Path, vaultPath, meta.PublicKey, tracker, nil)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Modify ONLY note_3.md
+	_ = os.WriteFile(filepath.Join(wsSession.Path, "note_3.md"), []byte("Modified Note Content 3"), 0600)
+	time.Sleep(150 * time.Millisecond)
+
+	// 4. Close session and Lock
+	cancel()
+	if err := vault.Lock(wsSession.Path, vaultPath, meta.PublicKey, tracker); err != nil {
+		t.Fatalf("Lock failed: %v", err)
+	}
+
+	// 5. Verify: untouched notes (1, 2, 4, 5) have EXACT SAME BYTES on disk (0 diff), while note 3 changed
+	for i := 1; i <= 5; i++ {
+		encFile := filepath.Join(vaultPath, fmt.Sprintf("note_%d.md.age", i))
+		data, err := os.ReadFile(encFile)
+		if err != nil {
+			t.Fatalf("Failed to read post-lock enc file %s: %v", encFile, err)
+		}
+		currentHash := sha256.Sum256(data)
+		prevHash := initialEncHashes[encFile]
+
+		if i == 3 {
+			if currentHash == prevHash {
+				t.Fatalf("Expected note_3.md.age to be updated, but ciphertext was identical")
+			}
+		} else {
+			if currentHash != prevHash {
+				t.Fatalf("Bug: untouched file note_%d.md.age was re-encrypted and changed on disk! Diff detected in git!", i)
+			}
+		}
 	}
 }

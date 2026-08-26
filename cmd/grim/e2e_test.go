@@ -42,7 +42,7 @@ func TestEndToEndLifecycle(t *testing.T) {
 
 	syncEvents := make(chan string, 10)
 	go func() {
-		_ = vault.WatchAndSync(ctx, ws.Path, vaultPath, meta.PublicKey, func(event, path string) {
+		_ = vault.WatchAndSync(ctx, ws.Path, vaultPath, meta.PublicKey, nil, func(event, path string) {
 			syncEvents <- event + ":" + path
 		})
 	}()

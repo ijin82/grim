@@ -326,7 +326,12 @@ func PruneDeletedFromVault(ramRoot string, vaultRoot string) error {
 }
 
 // FullSyncToVault walks ramPath and encrypts all files to vaultPath using Master Key.
-func FullSyncToVault(ramPath string, vaultPath string, pubKey string) error {
+func FullSyncToVault(ramPath string, vaultPath string, pubKey string, trackers ...*SyncTracker) error {
+	var tracker *SyncTracker
+	if len(trackers) > 0 {
+		tracker = trackers[0]
+	}
+
 	return filepath.WalkDir(ramPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d == nil {
 			return nil
@@ -344,19 +349,22 @@ func FullSyncToVault(ramPath string, vaultPath string, pubKey string) error {
 			return nil
 		}
 
-		return SyncFileToVault(path, ramPath, vaultPath, pubKey)
+		_, err = syncFileWithTracker(path, ramPath, vaultPath, pubKey, tracker)
+		return err
 	})
 }
 
 // WatchAndSync starts an fsnotify watcher on ramRoot and syncs changes to vaultRoot in real-time.
-func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey string, onSync func(event string, path string)) error {
+func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey string, tracker *SyncTracker, onSync func(event string, path string)) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create fsnotify watcher: %w", err)
 	}
 	defer watcher.Close()
 
-	tracker := NewSyncTracker()
+	if tracker == nil {
+		tracker = NewSyncTracker()
+	}
 
 	// Add all subdirectories to watcher and seed initial SHA-256 content hashes
 	_ = filepath.WalkDir(ramRoot, func(path string, d fs.DirEntry, err error) error {
@@ -501,13 +509,18 @@ func ChangePassphrase(vaultPath string, oldPassphrase string, newPassphrase stri
 }
 
 // Lock performs a final full sync from RAM to Vault, prunes deleted items, and securely destroys the RAM workspace.
-func Lock(ramPath string, vaultPath string, pubKey string) error {
+func Lock(ramPath string, vaultPath string, pubKey string, trackers ...*SyncTracker) error {
 	if _, err := os.Stat(ramPath); os.IsNotExist(err) {
 		return nil
 	}
 
-	// 1. Final sync to make sure no uncommitted edits remain
-	if err := FullSyncToVault(ramPath, vaultPath, pubKey); err != nil {
+	var tracker *SyncTracker
+	if len(trackers) > 0 {
+		tracker = trackers[0]
+	}
+
+	// 1. Final sync to make sure no uncommitted edits remain (skips untouched files)
+	if err := FullSyncToVault(ramPath, vaultPath, pubKey, tracker); err != nil {
 		return fmt.Errorf("failed to complete final sync before locking: %w", err)
 	}
 

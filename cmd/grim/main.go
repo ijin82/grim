@@ -23,7 +23,7 @@ import (
 	"golang.org/x/term"
 )
 
-var Version = "0.1.6"
+var Version = "0.1.7"
 
 var rootCmd = &cobra.Command{
 	Use:          "grim [vault]",
@@ -719,11 +719,12 @@ func executeOpen(vaultName string) error {
 	}
 
 	// 5. Start background continuous sync with timer reset on edits
+	tracker := vault.NewSyncTracker()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go func() {
-		_ = vault.WatchAndSync(ctx, ws.Path, vCfg.Path, meta.PublicKey, func(event, relPath string) {
+		_ = vault.WatchAndSync(ctx, ws.Path, vCfg.Path, meta.PublicKey, tracker, func(event, relPath string) {
 			resetInactivityTimer()
 			fmt.Printf("\r⚡ [%s] Auto-encrypted: %s\n> ", event, relPath)
 		})
@@ -799,7 +800,7 @@ func executeOpen(vaultName string) error {
 
 	// Lock, final sync, and wipe RAM
 	fmt.Println("🧹 Syncing final changes and securely wiping RAM workspace...")
-	if err := vault.Lock(ws.Path, vCfg.Path, meta.PublicKey); err != nil {
+	if err := vault.Lock(ws.Path, vCfg.Path, meta.PublicKey, tracker); err != nil {
 		return fmt.Errorf("error during lock: %w", err)
 	}
 
