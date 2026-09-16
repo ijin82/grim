@@ -165,7 +165,8 @@ func getBaseWorkspaceDir(editorName string) string {
 // getAllPossibleWorkspaceDirs returns all candidate directories where workspaces could have been created.
 func getAllPossibleWorkspaceDirs() []string {
 	var dirs []string
-	if runtime.GOOS == "linux" {
+	switch runtime.GOOS {
+	case "linux":
 		if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
 			dirs = append(dirs, filepath.Join(runtimeDir, "grim"))
 		}
@@ -174,11 +175,11 @@ func getAllPossibleWorkspaceDirs() []string {
 		if home, err := os.UserHomeDir(); err == nil {
 			dirs = append(dirs, filepath.Join(home, ".cache", "grim"))
 		}
-	} else if runtime.GOOS == "darwin" {
+	case "darwin":
 		if home, err := os.UserHomeDir(); err == nil {
 			dirs = append(dirs, filepath.Join(home, "Library", "Caches", "grim"))
 		}
-	} else if runtime.GOOS == "windows" {
+	case "windows":
 		if localApp := os.Getenv("LOCALAPPDATA"); localApp != "" {
 			dirs = append(dirs, filepath.Join(localApp, "grim", "cache"))
 		}

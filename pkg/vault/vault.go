@@ -262,9 +262,7 @@ func RemoveFileFromVault(ramFilePath string, ramRoot string, vaultRoot string) e
 
 	// 2. If an encrypted file with this relative path exists in vault, remove it
 	vaultAgePath := filepath.Join(vaultRoot, relPath+AgeExt)
-	if err := os.Remove(vaultAgePath); err != nil && !os.IsNotExist(err) {
-		// Ignore error if it didn't exist as a direct file
-	}
+	_ = os.Remove(vaultAgePath)
 
 	// 3. If an unencrypted file (e.g. .gitignore) exists in vault, remove it
 	_ = os.Remove(vaultDirPath)
@@ -360,7 +358,7 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 	if err != nil {
 		return fmt.Errorf("failed to create fsnotify watcher: %w", err)
 	}
-	defer watcher.Close()
+	defer func() { _ = watcher.Close() }()
 
 	if tracker == nil {
 		tracker = NewSyncTracker()
@@ -559,7 +557,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 		return err
@@ -569,7 +567,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	_, err = io.Copy(out, in)
 	return err
