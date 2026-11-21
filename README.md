@@ -62,7 +62,7 @@ While **Grim** works with various text editors and IDEs, it provides **dedicated
 | **List Vaults** | `grim list` | `grim ls` | Show configured vaults and lock status |
 | **Settings Wizard** | `grim setup` | — | Interactive configuration wizard |
 | **Discover / Attach** | `grim add [dir]` | `grim a` | Scan disk or attach existing vault |
-| **Lock Vault** | `grim lock [vault]` | — | Wipe in-memory workspace immediately |
+| **Lock Vault** | `grim lock [vault]` | — | Gracefully lock an active session or wipe a stale workspace |
 | **Status** | `grim status` | `grim st` | Check active RAM sessions |
 | **Remove Vault** | `grim remove <vault>` | `grim rm` | Remove vault from configuration |
 | **Create Vault** | `grim init <vault> <dir>` | — | Initialize a new encrypted vault |
@@ -257,7 +257,7 @@ Grim is written in pure Go without CGO dependencies and runs natively on **Linux
 - `grim add [vault] [dir]` (or `grim a`) — Attach existing vault or auto-discover from disk.
 - `grim list` (or `grim ls`) — List all configured vaults and their status.
 - `grim status` (or `grim st`) — View active unlocked vaults in RAM.
-- `grim lock [vault]` — Force lock and wipe RAM workspace.
+- `grim lock [vault]` — Gracefully lock an active session or wipe a stale RAM workspace.
 - `grim remove <vault>` (or `grim rm`) — Remove vault from configuration.
 - `grim setup` — Interactive configuration wizard (editor, timeout, passphrase).
 - `grim setup [vault]` — Interactive settings for a specific vault.

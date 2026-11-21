@@ -257,17 +257,58 @@ func SyncFileToVault(ramFilePath string, ramRoot string, vaultRoot string, pubKe
 }
 
 // syncFileWithTracker returns true if file was actually encrypted and written to disk, or false if skipped due to identical content hash.
+// rootSyncedDotfiles are root-level hidden files that must be encrypted and
+// synchronized back to the vault when the user edits them.
+var rootSyncedDotfiles = map[string]bool{
+	".gitignore":     true,
+	".gitattributes": true,
+}
+
+// shouldSyncVaultFile decides whether a RAM-relative path may be written to
+// the encrypted vault. Obsidian settings and selected root dotfiles are
+// allowed; other hidden paths, Git internals, session locks, and temporary
+// files are intentionally ignored.
+func shouldSyncVaultFile(relPath string) bool {
+	if relPath == "" || relPath == "." {
+		return false
+	}
+	if relPath == ramdisk.LockFileName {
+		return false
+	}
+	if relPath == ".git" || strings.HasPrefix(relPath, ".git/") || strings.HasPrefix(relPath, ".git\\") {
+		return false
+	}
+	if strings.HasSuffix(relPath, ".tmp") || strings.HasSuffix(relPath, ".new") {
+		return false
+	}
+
+	if relPath == ".obsidian" || strings.HasPrefix(relPath, ".obsidian"+string(filepath.Separator)) {
+		return true
+	}
+
+	// Only explicitly allowed root dotfiles are synchronized.
+	if !strings.ContainsRune(relPath, filepath.Separator) && rootSyncedDotfiles[relPath] {
+		return true
+	}
+
+	// Reject any remaining hidden path component, including nested dotfiles.
+	for _, part := range strings.Split(relPath, string(filepath.Separator)) {
+		if strings.HasPrefix(part, ".") {
+			return false
+		}
+	}
+
+	return true
+}
+
 func syncFileWithTracker(ramFilePath string, ramRoot string, vaultRoot string, pubKey string, tracker *SyncTracker) (bool, error) {
 	relPath, err := filepath.Rel(ramRoot, ramFilePath)
 	if err != nil {
 		return false, err
 	}
 
-	if relPath == "." || strings.HasPrefix(relPath, ".") && !strings.HasPrefix(relPath, ".obsidian") {
-		// Ignore hidden files except .obsidian settings
-		if strings.HasPrefix(relPath, ".") && relPath != ".obsidian" && !strings.HasPrefix(relPath, ".obsidian/") {
-			return false, nil
-		}
+	if !shouldSyncVaultFile(relPath) {
+		return false, nil
 	}
 
 	data, err := os.ReadFile(ramFilePath)

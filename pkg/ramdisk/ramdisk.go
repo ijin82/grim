@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -233,6 +234,59 @@ func isWorkspaceActive(workspacePath string) bool {
 	}
 
 	return isProcessAlive(info.PID)
+}
+
+// IsWorkspaceActive reports whether workspacePath belongs to a live session.
+// It is exported so the lock command can inspect all candidate workspace
+// locations instead of only the path derived from the current environment.
+func IsWorkspaceActive(workspacePath string) bool {
+	return isWorkspaceActive(workspacePath)
+}
+
+// ReadLockInfo reads the session metadata from a workspace lock file.
+// Legacy lock files containing only a PID are still accepted.
+func ReadLockInfo(workspacePath string) (*LockInfo, error) {
+	lockPath := filepath.Join(workspacePath, LockFileName)
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read lock file at %s: %w", lockPath, err)
+	}
+
+	var info LockInfo
+	if err := json.Unmarshal(data, &info); err == nil && info.PID > 0 {
+		return &info, nil
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return nil, fmt.Errorf("invalid lock file at %s", lockPath)
+	}
+	return &LockInfo{PID: pid}, nil
+}
+
+// FindWorkspacePaths returns all existing workspace directories for a vault
+// across every supported base directory. The result is sorted to keep command
+// behavior deterministic.
+func FindWorkspacePaths(vaultName string) []string {
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	var paths []string
+	seen := make(map[string]bool)
+	for _, baseDir := range getAllPossibleWorkspaceDirs() {
+		workspacePath := filepath.Join(baseDir, "grim-"+vaultName)
+		if seen[workspacePath] {
+			continue
+		}
+		seen[workspacePath] = true
+		if fi, err := os.Stat(workspacePath); err == nil && fi.IsDir() {
+			paths = append(paths, workspacePath)
+		}
+	}
+
+	sort.Strings(paths)
+	return paths
 }
 
 // CleanupStaleWorkspaces scans all workspace locations and securely wipes any orphaned folders from crashed sessions.

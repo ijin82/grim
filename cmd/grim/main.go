@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,7 +88,8 @@ var initCmd = &cobra.Command{
 			fmt.Println("⚠️  --force: existing vault metadata will be replaced; old notes may become undecryptable.")
 		}
 
-		pass1, err := promptPassword("Enter master passphrase: ")
+		stdin := bufio.NewReader(os.Stdin)
+		pass1, err := promptPasswordFrom("Enter master passphrase: ", stdin)
 		if err != nil {
 			return err
 		}
@@ -95,7 +97,7 @@ var initCmd = &cobra.Command{
 			return err
 		}
 
-		pass2, err := promptPassword("Confirm master passphrase: ")
+		pass2, err := promptPasswordFrom("Confirm master passphrase: ", stdin)
 		if err != nil {
 			return err
 		}
@@ -128,7 +130,7 @@ var initCmd = &cobra.Command{
 		}
 
 		fmt.Printf("🎉 Vault '%s' successfully initialized and registered in config!\n", vaultName)
-		fmt.Printf("👉 To open your notes, run: grim open %s\n", vaultName)
+		fmt.Printf("👉 To open your notes, run: grim %s\n", vaultName)
 		return nil
 	},
 }
@@ -424,7 +426,7 @@ func attachVaultDirect(cfg *config.Config, suggestedName string, absDir string) 
 	}
 
 	fmt.Printf("\n🎉 Vault '%s' successfully attached and saved to config!\n", vaultName)
-	fmt.Printf("👉 To open your notes, run: grim open %s\n", vaultName)
+	fmt.Printf("👉 To open your notes, run: grim %s\n", vaultName)
 	return nil
 }
 
@@ -444,7 +446,7 @@ var openCmd = &cobra.Command{
 
 var lockCmd = &cobra.Command{
 	Use:   "lock [vault]",
-	Short: "Force lock a vault and wipe its RAM workspace",
+	Short: "Gracefully lock an active vault or wipe a stale RAM workspace",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig("")
@@ -463,15 +465,116 @@ var lockCmd = &cobra.Command{
 			return fmt.Errorf("no vault specified and no default vault configured")
 		}
 
-		wsPath := ramdisk.GetPath(vaultName)
-		if err := ramdisk.WipeAndRemove(wsPath); err != nil {
-			return fmt.Errorf("failed to wipe RAM workspace: %w", err)
+		return lockVault(vaultName)
+	},
+}
+
+// lockVault requests a graceful lock from every active session of the vault.
+// It never wipes a workspace while its owner is alive: the owner receives
+// SIGINT and performs the normal final sync, prune, and secure wipe. Stale
+// workspaces are wiped directly, including copies in other base directories.
+func lockVault(vaultName string) error {
+	paths := ramdisk.FindWorkspacePaths(vaultName)
+	if len(paths) == 0 {
+		fmt.Printf("🔒 Vault '%s' is not unlocked.\n", vaultName)
+		return nil
+	}
+
+	var activePaths []string
+	for _, path := range paths {
+		if ramdisk.IsWorkspaceActive(path) {
+			activePaths = append(activePaths, path)
+		}
+	}
+
+	if len(activePaths) > 0 {
+		signaled := make(map[int]bool)
+		for _, path := range activePaths {
+			info, err := ramdisk.ReadLockInfo(path)
+			if err != nil {
+				return fmt.Errorf("failed to inspect active workspace %s: %w", path, err)
+			}
+			if info.PID <= 0 {
+				return fmt.Errorf("active workspace %s has no valid PID; use Ctrl+C in its terminal", path)
+			}
+			if info.PID == os.Getpid() {
+				return fmt.Errorf("refusing to signal the current process; use Ctrl+C in the active terminal")
+			}
+			if signaled[info.PID] {
+				continue
+			}
+
+			proc, err := os.FindProcess(info.PID)
+			if err != nil {
+				return fmt.Errorf("failed to find active grim process %d: %w", info.PID, err)
+			}
+			if err := proc.Signal(os.Interrupt); err != nil {
+				return fmt.Errorf("failed to request graceful lock from PID %d: %w; use Ctrl+C in that terminal", info.PID, err)
+			}
+			signaled[info.PID] = true
+			fmt.Printf("🔔 Requested graceful lock from active session (PID %d)...\n", info.PID)
 		}
 
-		runner.UnregisterObsidianVault(wsPath)
-		fmt.Printf("🧹 RAM workspace for '%s' wiped and locked.\n", vaultName)
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			stillActive := false
+			for _, path := range ramdisk.FindWorkspacePaths(vaultName) {
+				if ramdisk.IsWorkspaceActive(path) {
+					stillActive = true
+					break
+				}
+			}
+			if !stillActive {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		for _, path := range ramdisk.FindWorkspacePaths(vaultName) {
+			if ramdisk.IsWorkspaceActive(path) {
+				return fmt.Errorf("active session did not lock within timeout; use Ctrl+C in its terminal")
+			}
+			if err := ramdisk.WipeAndRemove(path); err != nil {
+				return fmt.Errorf("failed to wipe stale RAM workspace %s: %w", path, err)
+			}
+			runner.UnregisterObsidianVault(path)
+		}
+
+		fmt.Printf("🧹 Vault '%s' locked.\n", vaultName)
 		return nil
-	},
+	}
+
+	// No live owner: every discovered workspace is stale.
+	for _, path := range paths {
+		if err := ramdisk.WipeAndRemove(path); err != nil {
+			return fmt.Errorf("failed to wipe RAM workspace %s: %w", path, err)
+		}
+		runner.UnregisterObsidianVault(path)
+	}
+
+	fmt.Printf("🧹 RAM workspace for '%s' wiped and locked.\n", vaultName)
+	return nil
+}
+
+// sortedVaultNames returns configured vault names in deterministic order.
+func sortedVaultNames(cfg *config.Config) []string {
+	names := make([]string, 0, len(cfg.Vaults))
+	for name := range cfg.Vaults {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// activeWorkspacePath returns the active workspace from any supported base
+// directory, or the expected path when no live workspace is found.
+func activeWorkspacePath(vaultName string) string {
+	for _, path := range ramdisk.FindWorkspacePaths(vaultName) {
+		if ramdisk.IsWorkspaceActive(path) {
+			return path
+		}
+	}
+	return ramdisk.GetPath(vaultName)
 }
 
 var listCmd = &cobra.Command{
@@ -493,7 +596,8 @@ var listCmd = &cobra.Command{
 
 		fmt.Println("Configured Vaults:")
 		fmt.Println("------------------------------------------------------------")
-		for name, v := range cfg.Vaults {
+		for _, name := range sortedVaultNames(cfg) {
+			v := cfg.Vaults[name]
 			defMarker := " "
 			if name == cfg.DefaultVault {
 				defMarker = "*"
@@ -547,9 +651,8 @@ var removeCmd = &cobra.Command{
 		delete(cfg.Vaults, name)
 		if cfg.DefaultVault == name {
 			cfg.DefaultVault = ""
-			for k := range cfg.Vaults {
-				cfg.DefaultVault = k
-				break
+			if names := sortedVaultNames(cfg); len(names) > 0 {
+				cfg.DefaultVault = names[0]
 			}
 		}
 
@@ -573,10 +676,11 @@ var statusCmd = &cobra.Command{
 		}
 
 		unlockedCount := 0
-		for name, v := range cfg.Vaults {
+		for _, name := range sortedVaultNames(cfg) {
+			v := cfg.Vaults[name]
 			if ramdisk.IsUnlocked(name) {
 				unlockedCount++
-				fmt.Printf("🔓 Active: %s -> RAM: %s (Source: %s)\n", name, ramdisk.GetPath(name), v.Path)
+				fmt.Printf("🔓 Active: %s -> RAM: %s (Source: %s)\n", name, activeWorkspacePath(name), v.Path)
 			}
 		}
 
@@ -624,10 +728,8 @@ func executeOpen(vaultName string) error {
 
 	if vaultName == "" {
 		if len(cfg.Vaults) == 1 {
-			for k := range cfg.Vaults {
-				vaultName = k
-				break
-			}
+			names := sortedVaultNames(cfg)
+			vaultName = names[0]
 		} else {
 			return fmt.Errorf("no vault specified and no default vault found. Run 'grim list'")
 		}
@@ -650,9 +752,8 @@ func executeOpen(vaultName string) error {
 				delete(cfg.Vaults, vaultName)
 				if cfg.DefaultVault == vaultName {
 					cfg.DefaultVault = ""
-					for k := range cfg.Vaults {
-						cfg.DefaultVault = k
-						break
+					if names := sortedVaultNames(cfg); len(names) > 0 {
+						cfg.DefaultVault = names[0]
 					}
 				}
 				if err := cfg.Save(""); err != nil {
@@ -667,7 +768,7 @@ func executeOpen(vaultName string) error {
 
 	if ramdisk.IsUnlocked(vaultName) {
 		fmt.Printf("⚠️  Vault '%s' is ALREADY UNLOCKED in RAM.\n", vaultName)
-		wsPath := ramdisk.GetPath(vaultName)
+		wsPath := activeWorkspacePath(vaultName)
 		ed := vCfg.Editor
 		if ed == "" {
 			ed = cfg.DefaultEditor
@@ -1087,16 +1188,13 @@ func changePassphraseInteractive(cfg *config.Config, vaultName string) error {
 
 	if vaultName == "" {
 		if len(cfg.Vaults) == 1 {
-			for k := range cfg.Vaults {
-				vaultName = k
-				break
-			}
+			names := sortedVaultNames(cfg)
+			vaultName = names[0]
 		} else {
 			fmt.Println("\nSelect vault to change passphrase:")
-			var names []string
-			for k := range cfg.Vaults {
-				names = append(names, k)
-				fmt.Printf(" %d) %s\n", len(names), k)
+			names := sortedVaultNames(cfg)
+			for i, name := range names {
+				fmt.Printf(" %d) %s\n", i+1, name)
 			}
 			fmt.Printf("Choice [1-%d]: ", len(names))
 			scanner := bufio.NewScanner(os.Stdin)
@@ -1121,7 +1219,8 @@ func changePassphraseInteractive(cfg *config.Config, vaultName string) error {
 	}
 
 	fmt.Printf("\n🔑 Changing master passphrase for vault '%s' (%s)\n", vaultName, vCfg.Path)
-	oldPass, err := promptPassword("Enter CURRENT master passphrase: ")
+	stdin := bufio.NewReader(os.Stdin)
+	oldPass, err := promptPasswordFrom("Enter CURRENT master passphrase: ", stdin)
 	if err != nil {
 		return err
 	}
@@ -1131,7 +1230,7 @@ func changePassphraseInteractive(cfg *config.Config, vaultName string) error {
 		return nil
 	}
 
-	newPass1, err := promptPassword("Enter NEW master passphrase: ")
+	newPass1, err := promptPasswordFrom("Enter NEW master passphrase: ", stdin)
 	if err != nil {
 		return err
 	}
@@ -1140,7 +1239,7 @@ func changePassphraseInteractive(cfg *config.Config, vaultName string) error {
 		return nil
 	}
 
-	newPass2, err := promptPassword("Confirm NEW master passphrase: ")
+	newPass2, err := promptPasswordFrom("Confirm NEW master passphrase: ", stdin)
 	if err != nil {
 		return err
 	}
@@ -1178,10 +1277,9 @@ func selectVaultToConfigure(cfg *config.Config) error {
 	}
 
 	fmt.Println("\nSelect vault to configure:")
-	var names []string
-	for k := range cfg.Vaults {
-		names = append(names, k)
-		fmt.Printf(" %d) %s (editor: %s, timeout: %d min)\n", len(names), k, cfg.Vaults[k].Editor, cfg.Vaults[k].TimeoutMinutes)
+	names := sortedVaultNames(cfg)
+	for i, name := range names {
+		fmt.Printf(" %d) %s (editor: %s, timeout: %d min)\n", i+1, name, cfg.Vaults[name].Editor, cfg.Vaults[name].TimeoutMinutes)
 	}
 	fmt.Printf("Choice [1-%d]: ", len(names))
 	scanner := bufio.NewScanner(os.Stdin)
@@ -1204,14 +1302,13 @@ func setDefaultVaultInteractive(cfg *config.Config) error {
 	}
 
 	fmt.Println("\nSelect default vault:")
-	var names []string
-	for k := range cfg.Vaults {
-		names = append(names, k)
+	names := sortedVaultNames(cfg)
+	for i, name := range names {
 		defMarker := " "
-		if k == cfg.DefaultVault {
+		if name == cfg.DefaultVault {
 			defMarker = "*"
 		}
-		fmt.Printf(" %s %d) %s\n", defMarker, len(names), k)
+		fmt.Printf(" %s %d) %s\n", defMarker, i+1, name)
 	}
 	fmt.Printf("Choice [1-%d]: ", len(names))
 	scanner := bufio.NewScanner(os.Stdin)
@@ -1337,11 +1434,18 @@ func expandPath(path string) (string, error) {
 }
 
 func promptPassword(promptText string) (string, error) {
+	return promptPasswordFrom(promptText, bufio.NewReader(os.Stdin))
+}
+
+// promptPasswordFrom reads a passphrase from a shared reader. Sharing the
+// reader across multiple prompts is required for non-TTY input: otherwise the
+// first buffered reader can consume the confirmation line and the next prompt
+// receives EOF.
+func promptPasswordFrom(promptText string, reader *bufio.Reader) (string, error) {
 	fmt.Print(promptText)
 
 	fd := int(syscall.Stdin)
 	if !term.IsTerminal(fd) {
-		reader := bufio.NewReader(os.Stdin)
 		pass, err := reader.ReadString('\n')
 		if err != nil {
 			return "", err
@@ -1355,6 +1459,17 @@ func promptPassword(promptText string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(bytePassword)), nil
+}
+
+// cleanupStaleWorkspaces wipes stale RAM workspaces and removes their entries
+// from Obsidian's registry. A crash can leave both a plaintext workspace and a
+// stale vault entry in ~/.config/obsidian/obsidian.json.
+func cleanupStaleWorkspaces() []string {
+	cleaned := ramdisk.CleanupStaleWorkspaces()
+	for _, path := range cleaned {
+		runner.UnregisterObsidianVault(path)
+	}
+	return cleaned
 }
 
 // shouldCleanupWorkspaces returns false for commands whose output is consumed
@@ -1395,7 +1510,7 @@ func main() {
 		if !shouldCleanupWorkspaces(cmd) {
 			return
 		}
-		for _, p := range ramdisk.CleanupStaleWorkspaces() {
+		for _, p := range cleanupStaleWorkspaces() {
 			// stderr, not stdout: completion and other machine-readable
 			// commands must not contain human-readable messages.
 			fmt.Fprintf(os.Stderr, "🛡️  Securely wiped stale unencrypted workspace from previous session: %s\n", p)

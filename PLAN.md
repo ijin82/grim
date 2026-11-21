@@ -211,71 +211,89 @@ Tests:
 Manual check:
 - On Windows, confirm `grim list` reads `%APPDATA%\grim\config.yaml` and preserves an existing legacy config.
 
-## Phase 2 — Correctness and UX
+## Phase 2 — Correctness and UX (implemented, pending review)
 
 ### SYNC-01 — Hidden files other than `.obsidian` are not synced back
-`[ ]` `P2`
+`[x]` `P2`
 
-Problem: `syncFileWithTracker` ignores hidden files except `.obsidian`. A user editing `.gitignore` in the RAM workspace loses the change on lock.
+Problem: `syncFileWithTracker` ignored hidden files except `.obsidian`. Editing `.gitignore` in the RAM workspace lost the change on lock.
 
-Proposed fix:
-- Explicitly support selected root dotfiles (`.gitignore`, `.gitattributes`).
-- Continue excluding `.grim-lock`, `.git`, temporary files, and editor caches.
-- Add a test for `.gitignore` round-trip.
+Implemented:
+- Root `.gitignore` and `.gitattributes` are now encrypted and synchronized.
+- `.obsidian/**` remains synchronized.
+- `.grim-lock`, `.git/**`, temporary files, and all other hidden paths are still excluded.
+
+Tests:
+- [pkg/vault/sync_hidden_test.go](pkg/vault/sync_hidden_test.go) covers the allowlist and a `.gitignore` encrypt/decrypt round-trip.
 
 ### LOCK-01 — `grim lock` can wipe another session's workspace
-`[ ]` `P2`
+`[x]` `P2`
 
-Problem: `lock` calls `WipeAndRemove` directly, even if another grim process owns the workspace. The owner later sees a missing lock and refuses to lock; the vault stays safe, but the session is left in an inconsistent state.
+Problem: `lock` wiped the workspace directly, even when another grim process owned it.
 
-Proposed fix:
-- Detect an active owner before wiping.
-- Either signal the owner to lock gracefully or refuse with an explanation.
-- Keep the current safety behavior as the fallback.
+Implemented:
+- Active sessions are detected through the workspace lock.
+- The lock command sends `SIGINT` to the owner and waits up to 5 seconds for a graceful lock.
+- A workspace is never wiped while its owner is still alive.
+- If the owner does not exit, the command returns an error and leaves the workspace intact.
+
+Tests:
+- [cmd/grim/phase2_test.go](cmd/grim/phase2_test.go) covers stale workspaces, self-signal refusal, and a helper process that removes its workspace on `SIGINT`.
+
+Manual check:
+- Open a vault, run `grim lock <vault>` from another terminal, and confirm both the command and the session report a graceful lock.
 
 ### LOCK-02 — `grim lock` resolves the workspace path from the current environment
-`[ ]` `P2`
+`[x]` `P2`
 
-Problem: `lock` uses `ramdisk.GetPath`, which depends on the current editor/Flatpak detection, not necessarily the editor used to open the session.
+Implemented:
+- `ramdisk.FindWorkspacePaths` scans every supported workspace base directory.
+- `lock` works with all discovered paths and does not depend on the current editor/Flatpak detection.
+- `list`, `status`, and the "already unlocked" path use the active workspace location.
 
-Proposed fix:
-- Search all candidate workspace locations for the vault name.
-- Wipe only the one whose lock metadata matches the vault.
+Tests:
+- [cmd/grim/phase2_test.go](cmd/grim/phase2_test.go) exercises stale and active paths under an isolated runtime directory.
 
 ### OBS-01 — Stale Obsidian registry entries after a crash
-`[ ]` `P2`
+`[x]` `P2`
 
-Problem: `RegisterObsidianVault` adds the RAM workspace to `obsidian.json`; `UnregisterObsidianVault` runs on a clean lock. After a crash, the stale entry remains and may point to a missing workspace.
+Problem: a crash left the RAM workspace registered in `obsidian.json`, pointing to a missing directory.
 
-Proposed fix:
-- During stale cleanup, also unregister the removed workspace from Obsidian.
-- Make registry writes error-aware.
-- Add a test with a temporary `obsidian.json`.
+Implemented:
+- Stale workspace cleanup now calls `UnregisterObsidianVault` for every removed workspace.
+- `lock` also unregisters wiped workspaces.
+
+Tests:
+- [cmd/grim/phase2_test.go](cmd/grim/phase2_test.go) registers a temporary workspace in a fake `obsidian.json` and verifies cleanup removes the entry.
+
+Remaining:
+- Registry write errors are still ignored; tracked as OBS-02 in Phase 3.
 
 ### UX-02 — Non-deterministic vault ordering
-`[ ]` `P3`
+`[x]` `P3`
 
-Problem: `list`, `setup`, and vault selection iterate Go maps, so output order changes between runs.
+Implemented:
+- `list`, `status`, setup selection, passphrase selection, default-vault selection, and default fallback after removal use `sortedVaultNames`.
 
-Proposed fix:
-- Sort vault names before printing or selecting.
+Tests:
+- [cmd/grim/phase2_test.go](cmd/grim/phase2_test.go) verifies deterministic ordering.
 
 ### UX-03 — User-facing messages mention hidden `grim open`
-`[ ]` `P3`
+`[x]` `P3`
 
-Problem: `init`/`add` suggest `grim open <vault>`, but `open` is a hidden command.
-
-Proposed fix:
-- Suggest `grim <vault>` or unhide `open` and document it.
+Implemented:
+- `init` and `add` now suggest `grim <vault>` instead of the hidden `grim open <vault>`.
 
 ### UX-04 — Passphrase input consumes buffered lines in non-TTY mode
-`[ ]` `P3`
+`[x]` `P3`
 
-Problem: each `promptPassword` call creates a new buffered reader. With piped input, the first reader can consume both lines, and the confirmation prompt gets `EOF`.
+Implemented:
+- `init` and passphrase change share one `bufio.Reader` across prompts.
+- Non-TTY `grim init` with piped passphrase and confirmation now succeeds.
+- The single-prompt `open`/`add` paths remain unchanged.
 
-Proposed fix:
-- Use one shared buffered stdin reader for the whole command.
-- Add a non-TTY test for `init`.
+Manual check:
+- `printf 'pass12345\npass12345\n' | grim init test /tmp/test-vault` succeeds.
 
 ## Phase 3 — Robustness, performance, and portability
 
@@ -306,6 +324,16 @@ Problem: the watcher goroutine ignores `WatchAndSync`'s error. If inotify limits
 Proposed fix:
 - Propagate watcher errors to the session.
 - Print a clear warning and recommend restarting after fixing the cause.
+
+### OBS-02 — Obsidian registry write errors are ignored
+`[ ]` `P3`
+
+Problem: `RegisterObsidianVault` and `UnregisterObsidianVault` silently ignore read/write errors. A read-only or malformed `obsidian.json` leaves stale entries without any feedback.
+
+Proposed fix:
+- Return errors from registry operations.
+- Log or surface failures without making editor launch fail.
+- Add tests for malformed and read-only registry files.
 
 ### INST-01 — `grim install` portability and atomicity
 `[ ]` `P3`
@@ -389,11 +417,10 @@ Proposed:
 
 ## Suggested execution order
 
-1. Review, manually verify, and commit Phase 1.
+1. Review, manually verify, and commit Phase 2.
 2. Add SEC-05b: true master-key rotation with staged re-encryption and rollback.
-3. Start Phase 2 with SYNC-01, LOCK-01, and LOCK-02.
-4. Add CI and release automation.
-5. Work through Phase 3 by priority.
+3. Add CI and release automation.
+4. Work through Phase 3 by priority (ERR-01 and OBS-02 first).
 
 ## Release checklist (current manual process)
 
