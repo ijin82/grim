@@ -122,9 +122,10 @@ Grim aims to provide the following properties:
   cannot recover note content without the passphrase or master key.
 - **Per-file authenticated encryption:** each `.age` file is independently
   authenticated by age; ciphertext tampering is detected on decryption.
-- **No plaintext written back by Grim:** decrypted content is written only to
-  the workspace, never back into `.age` files. Pre-existing unencrypted files in
-  the vault (for example a legacy `.gitignore`) are outside this guarantee.
+- **No plaintext written back by Grim for encrypted notes:** decrypted content
+  is written only to the workspace, never back into `.age` files. Root
+  `.gitignore` and `.gitattributes` are intentionally plaintext so Git can use
+  them; never store secrets in those files.
 - **No automatic deletion without a valid session:** watcher deletions and
   pruning require a live session lock and a present `.grim-lock`.
 - **Atomic file writes:** encrypted files and configuration are written through
@@ -231,8 +232,8 @@ Current safeguards include:
 - cleanup messages written to `stderr`;
 - atomic writes for encrypted files and configuration;
 - path-traversal checks on vault deletions;
-- hidden-file allowlist (`.obsidian`, root `.gitignore`,
-  `.gitattributes`);
+- hidden-file policy: `.obsidian` is encrypted, root `.gitignore` and
+  `.gitattributes` stay plaintext for Git, and other hidden paths are excluded;
 - streaming encryption/decryption and streaming SHA-256 for large files;
 - platform-specific Flatpak Obsidian detection;
 - regression tests for watcher, locking, cleanup, and install behavior.

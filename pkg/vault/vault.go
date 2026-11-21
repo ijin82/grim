@@ -166,6 +166,12 @@ func Unlock(vaultPath string, ramPath string, meta *Meta) error {
 		return fmt.Errorf("invalid master key metadata")
 	}
 
+	// Older versions could encrypt root Git files. Migrate them back to
+	// plaintext before copying anything into RAM.
+	if err := migrateLegacyPlaintextFiles(vaultPath, meta); err != nil {
+		return fmt.Errorf("failed to migrate legacy plaintext files: %w", err)
+	}
+
 	err := filepath.WalkDir(vaultPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -256,17 +262,23 @@ func SyncFileToVault(ramFilePath string, ramRoot string, vaultRoot string, pubKe
 	return err
 }
 
-// syncFileWithTracker returns true if file was actually encrypted and written to disk, or false if skipped due to identical content hash.
-// rootSyncedDotfiles are root-level hidden files that must be encrypted and
-// synchronized back to the vault when the user edits them.
-var rootSyncedDotfiles = map[string]bool{
+// plaintextVaultFiles are root-level Git files that must remain unencrypted
+// in the vault so Git can use them. They are synchronized as plaintext.
+var plaintextVaultFiles = map[string]bool{
 	".gitignore":     true,
 	".gitattributes": true,
 }
 
+func isPlaintextVaultFile(relPath string) bool {
+	if strings.ContainsRune(relPath, filepath.Separator) {
+		return false
+	}
+	return plaintextVaultFiles[relPath]
+}
+
 // shouldSyncVaultFile decides whether a RAM-relative path may be written to
-// the encrypted vault. Obsidian settings and selected root dotfiles are
-// allowed; other hidden paths, Git internals, session locks, and temporary
+// the vault. Obsidian settings, selected root Git files, and ordinary files
+// are allowed; other hidden paths, Git internals, session locks, and temporary
 // files are intentionally ignored.
 func shouldSyncVaultFile(relPath string) bool {
 	if relPath == "" || relPath == "." {
@@ -286,8 +298,8 @@ func shouldSyncVaultFile(relPath string) bool {
 		return true
 	}
 
-	// Only explicitly allowed root dotfiles are synchronized.
-	if !strings.ContainsRune(relPath, filepath.Separator) && rootSyncedDotfiles[relPath] {
+	// Root Git files are synchronized as plaintext, not encrypted.
+	if isPlaintextVaultFile(relPath) {
 		return true
 	}
 
@@ -319,10 +331,141 @@ func hashFile(path string) ([32]byte, error) {
 	return sum, nil
 }
 
+// syncFileWithTracker returns true if the file was actually written to disk,
+// or false if it was skipped due to identical content.
+// syncPlaintextFileToVault keeps root Git files unencrypted. It also removes
+// a legacy .age counterpart, which older builds could create.
+func syncPlaintextFileToVault(ramFilePath string, vaultRoot string, relPath string) (bool, error) {
+	vaultPath := filepath.Join(vaultRoot, relPath)
+	agePath := vaultPath + AgeExt
+
+	ramHash, err := hashFile(ramFilePath)
+	if err != nil {
+		return false, err
+	}
+
+	if existingHash, err := hashFile(vaultPath); err == nil && existingHash == ramHash {
+		if err := os.Remove(agePath); err != nil && !os.IsNotExist(err) {
+			return false, fmt.Errorf("failed to remove legacy encrypted copy %s: %w", agePath, err)
+		}
+		return false, nil
+	}
+
+	if err := copyFileAtomic(ramFilePath, vaultPath); err != nil {
+		return false, err
+	}
+	if err := os.Remove(agePath); err != nil && !os.IsNotExist(err) {
+		return true, fmt.Errorf("wrote plaintext %s but failed to remove legacy encrypted copy: %w", vaultPath, err)
+	}
+
+	return true, nil
+}
+
+// copyFileAtomic copies a plaintext file through a temporary file and renames
+// it into place, so a reader never observes a partially written .gitignore.
+func copyFileAtomic(srcPath, dstPath string) error {
+	in, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
+		return err
+	}
+
+	tmpFile, err := os.CreateTemp(filepath.Dir(dstPath), "."+filepath.Base(dstPath)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := io.Copy(tmpFile, in); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, dstPath)
+}
+
+// migrateLegacyPlaintextFiles converts .gitignore.age and .gitattributes.age
+// back to their plaintext forms. These files must stay plaintext so Git can
+// use them; the encrypted copies were created by older Grim versions.
+func migrateLegacyPlaintextFiles(vaultPath string, meta *Meta) error {
+	for name := range plaintextVaultFiles {
+		agePath := filepath.Join(vaultPath, name+AgeExt)
+		data, err := os.ReadFile(agePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("failed to read legacy encrypted file %s: %w", agePath, err)
+		}
+
+		decrypted, err := crypto.DecryptWithKey(data, meta.PrivateKey)
+		if err != nil {
+			return fmt.Errorf("failed to decrypt legacy file %s: %w", agePath, err)
+		}
+
+		if err := writeFileAtomic(filepath.Join(vaultPath, name), decrypted, 0600); err != nil {
+			return fmt.Errorf("failed to write plaintext file %s: %w", name, err)
+		}
+		if err := os.Remove(agePath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove legacy encrypted file %s: %w", agePath, err)
+		}
+	}
+	return nil
+}
+
+// writeFileAtomic writes a small plaintext file through a temporary file and
+// renames it into place.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+
+	tmpFile, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Chmod(mode); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
+}
+
 func syncFileWithTracker(ramFilePath string, ramRoot string, vaultRoot string, pubKey string, tracker *SyncTracker) (bool, error) {
 	relPath, err := filepath.Rel(ramRoot, ramFilePath)
 	if err != nil {
 		return false, err
+	}
+
+	if isPlaintextVaultFile(relPath) {
+		return syncPlaintextFileToVault(ramFilePath, vaultRoot, relPath)
 	}
 
 	if !shouldSyncVaultFile(relPath) {

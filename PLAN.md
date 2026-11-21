@@ -219,12 +219,17 @@ Manual check:
 Problem: `syncFileWithTracker` ignored hidden files except `.obsidian`. Editing `.gitignore` in the RAM workspace lost the change on lock.
 
 Implemented:
-- Root `.gitignore` and `.gitattributes` are now encrypted and synchronized.
-- `.obsidian/**` remains synchronized.
-- `.grim-lock`, `.git/**`, temporary files, and all other hidden paths are still excluded.
+- Root `.gitignore` and `.gitattributes` remain plaintext and are synchronized
+  as plaintext so Git can use them.
+- Legacy `.gitignore.age` / `.gitattributes.age` files are migrated back to
+  plaintext during unlock and removed.
+- `.obsidian/**` is encrypted and synchronized as before.
+- `.grim-lock`, `.git/**`, temporary files, and all other hidden paths are
+  still excluded.
 
 Tests:
-- [pkg/vault/sync_hidden_test.go](pkg/vault/sync_hidden_test.go) covers the allowlist and a `.gitignore` encrypt/decrypt round-trip.
+- [pkg/vault/sync_hidden_test.go](pkg/vault/sync_hidden_test.go) covers the
+  allowlist, plaintext round-trip, legacy migration, and the `.git` exclusion.
 
 ### LOCK-01 — `grim lock` can wipe another session's workspace
 `[x]` `P2`
@@ -437,7 +442,6 @@ Tests:
 - File modes and timestamps are not preserved exactly (decrypted files use `0600`).
 - `obsidian.json` is rewritten with `0600`; verify this matches Obsidian expectations.
 - `CleanupStaleWorkspaces` still runs for broad commands such as `list` and `status`; with flock this is safe, but consider narrowing it further.
-- A legacy plaintext `.gitignore` in the vault is not removed when the new encrypted `.gitignore.age` is created.
 - Graceful `grim lock` relies on `SIGINT`; Windows currently returns a safe error instead of a graceful shutdown.
 - `go.mod` has `go 1.26.5`; verify the intended minimum Go version before release.
 - README quick-start examples should be checked after the next version bump.

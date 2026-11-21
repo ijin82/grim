@@ -38,7 +38,7 @@ In the digital era, **Grim** serves as the modern cryptographic grimoire for dev
 - **Continuous Live Sync:** Uses `fsnotify` to detect file saves and immediately auto-encrypts changes to `.age` files on physical disk.
 - **Auto-Lock & Multi-Pass Memory Wipe:** Closes the session on timeout, `Ctrl+C`, `lock` command, or editor exit, and overwrites RAM files with zeroes and random bytes before unmounting.
 - **Interactive Setup Wizard:** Built-in `grim setup` wizard to configure editors, auto-lock timeouts, and re-encrypt vaults.
-- **Git-Friendly:** Because each note is encrypted to its own `.md.age` file, you can easily use Git (`git init`, `git commit`, `git push`) to sync your encrypted vault.
+- **Git-Friendly:** Because each note is encrypted to its own `.md.age` file, you can easily use Git (`git init`, `git commit`, `git push`) to sync your encrypted vault. Root `.gitignore` and `.gitattributes` remain plaintext so Git can use them; never put secrets in those files.
 
 ---
 
