@@ -26,7 +26,7 @@ import (
 	"golang.org/x/term"
 )
 
-var Version = "0.3.1"
+var Version = "0.3.2"
 
 // minPassphraseLength is the minimum number of Unicode code points accepted
 // for a new or changed master passphrase.
