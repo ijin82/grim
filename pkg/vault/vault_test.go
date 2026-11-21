@@ -6,7 +6,21 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/ijin82/grim/pkg/ramdisk"
 )
+
+// createTestWorkspace prepares a directory that looks like a real session:
+// without .grim-lock, Lock/Prune would refuse to work under the new rules.
+func createTestWorkspace(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ramdisk.LockFileName), []byte(`{"pid":1}`), 0600); err != nil {
+		t.Fatalf("Failed to write workspace lock: %v", err)
+	}
+}
 
 func TestVaultLifecycle(t *testing.T) {
 	tempDir := t.TempDir()
@@ -37,9 +51,7 @@ func TestVaultLifecycle(t *testing.T) {
 	}
 
 	// 3. Unlock to RAM in microseconds
-	if err := os.MkdirAll(ramPath, 0700); err != nil {
-		t.Fatalf("Failed to create RAM dir: %v", err)
-	}
+	createTestWorkspace(t, ramPath)
 	if err := Unlock(vaultPath, ramPath, meta); err != nil {
 		t.Fatalf("Unlock failed: %v", err)
 	}
@@ -102,6 +114,7 @@ func TestVaultLifecycle(t *testing.T) {
 
 	// 7. Re-unlock to a fresh RAM path and verify the newly added note is intact
 	ramPath2 := filepath.Join(tempDir, "ram-workspace-2")
+	createTestWorkspace(t, ramPath2)
 	if err := Unlock(vaultPath, ramPath2, meta); err != nil {
 		t.Fatalf("Second Unlock failed: %v", err)
 	}

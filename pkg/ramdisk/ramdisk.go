@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -22,6 +21,7 @@ type Workspace struct {
 	Path      string
 	VaultName string
 	PID       int
+	lock      *workspaceLock
 }
 
 type LockInfo struct {
@@ -79,18 +79,35 @@ func NewForEditor(vaultName string, editorName string) (*Workspace, error) {
 	}
 
 	pid := os.Getpid()
-	lockData, _ := json.Marshal(LockInfo{
+	lock, err := acquireWorkspaceLock(filepath.Join(vaultRAMPath, LockFileName), LockInfo{
 		PID:       pid,
 		VaultName: vaultName,
 		CreatedAt: time.Now(),
 	})
-	_ = os.WriteFile(filepath.Join(vaultRAMPath, LockFileName), lockData, 0600)
+	if err != nil {
+		// Never leave a workspace directory without a valid lock: otherwise the
+		// next grim invocation would treat it as abandoned and try to wipe it.
+		_ = os.RemoveAll(vaultRAMPath)
+		return nil, fmt.Errorf("failed to lock RAM workspace at %s: %w", vaultRAMPath, err)
+	}
 
 	return &Workspace{
 		Path:      vaultRAMPath,
 		VaultName: vaultName,
 		PID:       pid,
+		lock:      lock,
 	}, nil
+}
+
+// Close releases the session advisory lock without deleting workspace files.
+// It is called after Lock/Destroy or when executeOpen returns.
+func (w *Workspace) Close() error {
+	if w == nil || w.lock == nil {
+		return nil
+	}
+	err := w.lock.Close()
+	w.lock = nil
+	return err
 }
 
 func isFlatpakEditor(editorName string) bool {
@@ -188,9 +205,18 @@ func getAllPossibleWorkspaceDirs() []string {
 	return dirs
 }
 
-// isWorkspaceActive checks if a workspace lockfile exists and its process is alive.
+// isWorkspaceActive checks whether a workspace is held by an active session.
+//
+// The primary check is the advisory file lock: it works even from another PID
+// namespace (Flatpak, containers) and is not affected by PID reuse. The PID
+// check remains only for compatibility with older grim versions that did not
+// hold an flock yet.
 func isWorkspaceActive(workspacePath string) bool {
 	lockPath := filepath.Join(workspacePath, LockFileName)
+	if isWorkspaceLockHeld(lockPath) {
+		return true
+	}
+
 	data, err := os.ReadFile(lockPath)
 	if err != nil {
 		return false
@@ -207,20 +233,6 @@ func isWorkspaceActive(workspacePath string) bool {
 	}
 
 	return isProcessAlive(info.PID)
-}
-
-// isProcessAlive checks if a process with given PID exists.
-func isProcessAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		// On Windows, process probing
-		return true
-	}
-	// Unix: signal 0 checks process existence without killing
-	err := syscall.Kill(pid, 0)
-	return err == nil
 }
 
 // CleanupStaleWorkspaces scans all workspace locations and securely wipes any orphaned folders from crashed sessions.
@@ -255,6 +267,10 @@ func CleanupStaleWorkspaces() []string {
 
 // Destroy securely wipes all files in the workspace with zeros and random bytes.
 func (w *Workspace) Destroy() error {
+	if w == nil {
+		return nil
+	}
+	_ = w.Close()
 	return WipeAndRemove(w.Path)
 }
 

@@ -682,6 +682,8 @@ func executeOpen(vaultName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create RAM workspace: %w", err)
 	}
+	// The session lock must live until the very end, including Lock and wipe.
+	defer func() { _ = ws.Close() }()
 
 	// 3. Decrypt all notes into RAM
 	fmt.Printf("📂 Decrypting files into in-memory workspace at %s...\n", ws.Path)
@@ -726,6 +728,10 @@ func executeOpen(vaultName string) error {
 	go func() {
 		_ = vault.WatchAndSync(ctx, ws.Path, vCfg.Path, meta.PublicKey, tracker, func(event, relPath string) {
 			resetInactivityTimer()
+			if event == "BLOCKED" {
+				fmt.Fprintf(os.Stderr, "\n⚠️  Sync disabled: workspace integrity lost (%s). Vault files were not modified.\n> ", relPath)
+				return
+			}
 			fmt.Printf("\r⚡ [%s] Auto-encrypted: %s\n> ", event, relPath)
 		})
 	}()
@@ -1309,14 +1315,24 @@ func promptPassword(promptText string) (string, error) {
 	return strings.TrimSpace(string(bytePassword)), nil
 }
 
-func main() {
-	// Auto-cleanup any stale orphaned RAM workspaces from previous crashes
-	if cleaned := ramdisk.CleanupStaleWorkspaces(); len(cleaned) > 0 {
-		for _, p := range cleaned {
-			fmt.Printf("🛡️  Securely wiped stale unencrypted workspace from previous session: %s\n", p)
-		}
+// shouldCleanupWorkspaces returns false for commands whose output is consumed
+// by machines (shell completion, help, internal __complete). Cleanup prints
+// messages and must not end up in a generated shell script.
+func shouldCleanupWorkspaces(cmd *cobra.Command) bool {
+	path := cmd.CommandPath()
+	switch path {
+	case "grim completion", "grim help", "grim __complete", "grim __completeNoDesc":
+		return false
 	}
+	if strings.HasPrefix(path, "grim completion ") ||
+		strings.HasPrefix(path, "grim __complete ") ||
+		strings.HasPrefix(path, "grim __completeNoDesc ") {
+		return false
+	}
+	return true
+}
 
+func main() {
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(removeCmd)
@@ -1328,6 +1344,20 @@ func main() {
 	rootCmd.AddCommand(setDefaultCmd)
 	rootCmd.AddCommand(installCmd)
 	rootCmd.SetUsageTemplate(strings.ReplaceAll(rootCmd.UsageTemplate(), "{{rpad .Name .NamePadding }}", "{{rpad .NameAndAliases .NamePadding }}"))
+
+	// Stale workspace cleanup runs only for commands that actually need it.
+	// Previously it also ran for `grim completion`, which allowed shell hooks
+	// to wipe an active session.
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
+		if !shouldCleanupWorkspaces(cmd) {
+			return
+		}
+		for _, p := range ramdisk.CleanupStaleWorkspaces() {
+			// stderr, not stdout: completion and other machine-readable
+			// commands must not contain human-readable messages.
+			fmt.Fprintf(os.Stderr, "🛡️  Securely wiped stale unencrypted workspace from previous session: %s\n", p)
+		}
+	}
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

@@ -140,6 +140,17 @@ To lock your vault and wipe the in-memory notes:
 
 ---
 
+### 🛡️ Session protection and external cleanup
+
+An active session holds an advisory lock on `.grim-lock`. Other processes — including `grim list`, `grim status`, and cleanup running inside Flatpak or a container — see the lock and leave the RAM workspace untouched. If `.grim-lock` disappears, the watcher stops deleting `.age` files and skips pruning, so an external wipe of RAM cannot destroy the vault.
+
+`grim completion` never runs cleanup and never writes service messages to stdout, so it is safe to load with `source <(grim completion bash)`.
+
+> [!WARNING]
+> If `BASH_ENV=~/.bashrc` is set, non-interactive shell scripts (including the Flatpak launcher) may execute code from `.bashrc`. Do not put state-changing commands there without an interactive guard (`case $- in *i*) ;; *) return ;; esac`).
+
+---
+
 ## 🛠️ Settings & Setup Wizard (`grim setup`)
 
 Launch the interactive configuration wizard:

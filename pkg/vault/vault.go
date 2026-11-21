@@ -250,8 +250,21 @@ func RemoveFileFromVault(ramFilePath string, ramRoot string, vaultRoot string) e
 		return err
 	}
 
-	if relPath == "." || relPath == "" || relPath == MetaFileName || relPath == ".git" {
+	if relPath == "." || relPath == "" || relPath == MetaFileName || relPath == ".git" || relPath == ramdisk.LockFileName {
 		return nil
+	}
+
+	// Path traversal guard: watcher passes fsnotify paths, but
+	// RemoveFileFromVault is exported. Never delete anything outside vaultRoot.
+	if relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("refusing to remove path outside vault root: %s", relPath)
+	}
+
+	// Removing from the encrypted vault is allowed only while the session is
+	// alive. If .grim-lock is gone, the RAM workspace was wiped externally:
+	// deleting .age files would turn an external wipe into data loss.
+	if _, err := os.Stat(filepath.Join(ramRoot, ramdisk.LockFileName)); err != nil {
+		return fmt.Errorf("refusing to remove %q: workspace lock %s is missing", relPath, ramdisk.LockFileName)
 	}
 
 	// 1. If a directory with this relative path exists in vault, remove it and all its contents
@@ -276,6 +289,12 @@ func RemoveFileFromVault(ramFilePath string, ramRoot string, vaultRoot string) e
 
 // PruneDeletedFromVault walks vaultRoot and removes any files or folders that no longer exist in ramRoot.
 func PruneDeletedFromVault(ramRoot string, vaultRoot string) error {
+	// Without a lock file, a normal deletion cannot be distinguished from an
+	// external wipe of the RAM workspace. In that case pruning is forbidden.
+	if _, err := os.Stat(filepath.Join(ramRoot, ramdisk.LockFileName)); err != nil {
+		return fmt.Errorf("refusing to prune: workspace lock %s is missing", ramdisk.LockFileName)
+	}
+
 	return filepath.WalkDir(vaultRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d == nil {
 			return nil
@@ -325,6 +344,12 @@ func PruneDeletedFromVault(ramRoot string, vaultRoot string) error {
 
 // FullSyncToVault walks ramPath and encrypts all files to vaultPath using Master Key.
 func FullSyncToVault(ramPath string, vaultPath string, pubKey string, trackers ...*SyncTracker) error {
+	// A full sync also requires a live session: without a lock file there is
+	// no guarantee that ramPath is our workspace rather than wipe leftovers.
+	if _, err := os.Stat(filepath.Join(ramPath, ramdisk.LockFileName)); err != nil {
+		return fmt.Errorf("refusing full sync: workspace lock %s is missing", ramdisk.LockFileName)
+	}
+
 	var tracker *SyncTracker
 	if len(trackers) > 0 {
 		tracker = trackers[0]
@@ -354,6 +379,11 @@ func FullSyncToVault(ramPath string, vaultPath string, pubKey string, trackers .
 
 // WatchAndSync starts an fsnotify watcher on ramRoot and syncs changes to vaultRoot in real-time.
 func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey string, tracker *SyncTracker, onSync func(event string, path string)) error {
+	lockPath := filepath.Join(ramRoot, ramdisk.LockFileName)
+	if _, err := os.Stat(lockPath); err != nil {
+		return fmt.Errorf("workspace lock %s is missing; refusing to start sync", ramdisk.LockFileName)
+	}
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create fsnotify watcher: %w", err)
@@ -388,6 +418,40 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 	var mu sync.Mutex
 	debounceMap := make(map[string]*time.Timer)
 
+	// compromised means the integrity of the RAM workspace was violated
+	// externally (for example, it was wiped by cleanup from another PID
+	// namespace). After that, the watcher must stop all deletions from the
+	// vault: otherwise an external RAM wipe becomes encrypted data loss.
+	compromised := false
+
+	isCompromised := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return compromised
+	}
+
+	markCompromised := func(reason string) {
+		mu.Lock()
+		if compromised {
+			mu.Unlock()
+			return
+		}
+		compromised = true
+		mu.Unlock()
+
+		if onSync != nil {
+			onSync("BLOCKED", reason)
+		}
+	}
+
+	verifyWorkspaceLock := func() bool {
+		if _, err := os.Stat(lockPath); err != nil {
+			markCompromised(ramdisk.LockFileName + " disappeared")
+			return false
+		}
+		return true
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -396,6 +460,22 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil
+			}
+
+			if isCompromised() {
+				continue
+			}
+			if !verifyWorkspaceLock() {
+				continue
+			}
+
+			// Removing/renaming the lock file itself is an unambiguous sign
+			// that the workspace was cleared by something other than our
+			// session. Leave the vault untouched.
+			if filepath.Base(event.Name) == ramdisk.LockFileName &&
+				(event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) {
+				markCompromised(ramdisk.LockFileName + " was removed")
+				continue
 			}
 
 			// If a new directory is created/renamed, watch it recursively and sync any files inside
@@ -439,6 +519,13 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 				delete(debounceMap, filePath)
 				mu.Unlock()
 
+				if isCompromised() {
+					return
+				}
+				if !verifyWorkspaceLock() {
+					return
+				}
+
 				if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
 					if _, err := os.Stat(filePath); err == nil {
 						written, err := syncFileWithTracker(filePath, ramRoot, vaultRoot, pubKey, tracker)
@@ -451,11 +538,19 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 					}
 				} else if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
 					rel, _ := filepath.Rel(ramRoot, filePath)
+					if rel == ramdisk.LockFileName {
+						markCompromised(ramdisk.LockFileName + " was removed")
+						return
+					}
 					tracker.Delete(rel)
 					if err := RemoveFileFromVault(filePath, ramRoot, vaultRoot); err == nil {
 						if onSync != nil {
 							onSync("REMOVE", rel)
 						}
+					} else {
+						// Most likely the lock disappeared between checks.
+						// Delete nothing and switch the watcher to safe mode.
+						markCompromised(err.Error())
 					}
 				}
 			})
@@ -510,6 +605,15 @@ func ChangePassphrase(vaultPath string, oldPassphrase string, newPassphrase stri
 func Lock(ramPath string, vaultPath string, pubKey string, trackers ...*SyncTracker) error {
 	if _, err := os.Stat(ramPath); os.IsNotExist(err) {
 		return nil
+	}
+
+	// If the lock file is missing, the RAM workspace no longer belongs to this
+	// session (for example, it was wiped by external cleanup). Such a directory
+	// must not be synchronized or pruned: that would delete encrypted notes
+	// that are absent from RAM.
+	if _, err := os.Stat(filepath.Join(ramPath, ramdisk.LockFileName)); err != nil {
+		_ = ramdisk.WipeAndRemove(ramPath)
+		return fmt.Errorf("refusing to lock: workspace lock %s is missing; vault was not pruned", ramdisk.LockFileName)
 	}
 
 	var tracker *SyncTracker
