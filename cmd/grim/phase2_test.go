@@ -182,3 +182,56 @@ func TestCleanupStaleWorkspacesUnregistersObsidian(t *testing.T) {
 		t.Fatalf("stale Obsidian registry entry was not removed: %s", data)
 	}
 }
+
+func TestIsReopenCommand(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{input: "r", want: true},
+		{input: "R", want: true},
+		{input: " reopen ", want: true},
+		{input: "lock", want: false},
+		{input: "", want: false},
+	}
+
+	for _, tc := range tests {
+		if got := isReopenCommand(tc.input); got != tc.want {
+			t.Fatalf("isReopenCommand(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestReopenEditorRestartsFakeEditor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-based editor test is Unix-specific")
+	}
+	_ = setupPhase2Env(t)
+
+	script := filepath.Join(t.TempDir(), "fake-editor.sh")
+	body := "#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n"
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("failed to write fake editor: %v", err)
+	}
+	target := t.TempDir()
+
+	first, err := LaunchForTest(script, target)
+	if err != nil {
+		t.Fatalf("failed to launch first editor: %v", err)
+	}
+
+	second, err := reopenEditor(script, target, first)
+	if err != nil {
+		t.Fatalf("reopenEditor failed: %v", err)
+	}
+	defer func() { _ = second.Stop() }()
+
+	if second.PID <= 0 {
+		t.Fatalf("reopened editor has no PID")
+	}
+}
+
+// LaunchForTest is a tiny wrapper that keeps the test readable.
+func LaunchForTest(editor, target string) (*runner.EditorProcess, error) {
+	return runner.Launch(editor, target)
+}

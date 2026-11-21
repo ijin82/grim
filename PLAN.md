@@ -411,7 +411,26 @@ Implemented:
 - Documented the non-tmpfs workspace fallback, passphrase non-rotation, metadata leakage, rollback risk, wipe limits, Obsidian Sync risk, `BASH_ENV`, and Windows lock behavior.
 - Added a short security section with a link in [README.md](README.md).
 
+## Post-release enhancements
+
+### UX-05 — Reopen the editor without restarting Grim
+`[x]` `P2`
+
+Implemented:
+- The active Grim console accepts `r` or `reopen`.
+- Grim stops the previous editor process, closes the Obsidian application
+  (Flatpak, native, macOS, or Windows as applicable), and relaunches the editor
+  against the existing RAM workspace.
+- The session, watcher, and locks stay active; no lock/wipe is performed.
+- The session banner and unknown-command hint document the command.
+- README describes the workflow.
+
+Tests:
+- `isReopenCommand`, editor restart with a fake helper process, and the safe
+  non-Obsidian close path are covered.
+
 ## Known minor issues / backlog
+
 
 - `WipeAndRemove` secure-overwrite guarantees are limited on SSDs, copy-on-write filesystems, and network filesystems.
 - Symlinks inside the RAM workspace are followed by sync; define and document the expected behavior.

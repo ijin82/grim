@@ -58,3 +58,9 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatalf("failed to stop fake editor: %v", err)
 	}
 }
+
+func TestCloseEditorApplicationNonObsidian(t *testing.T) {
+	if err := CloseEditorApplication("vim"); err != nil {
+		t.Fatalf("CloseEditorApplication(vim) returned error: %v", err)
+	}
+}

@@ -149,6 +149,13 @@ To lock your vault and wipe the in-memory notes:
 - For terminal editors (like `vim`/`nvim`): simply exit the editor (`:wq` / `:q`), or
 - Wait for the auto-lock timeout (default: 30 minutes).
 
+### 5. Reopen the Editor Without Locking
+
+If Obsidian was already running with another vault, or the editor lost the RAM
+workspace after a session restart, type `r` (or `reopen`) in the active Grim
+terminal. Grim stops the current editor, closes Obsidian windows, and reopens
+the existing RAM workspace. Other Obsidian vault windows will also be closed.
+
 ---
 
 ### 🛡️ Session protection and external cleanup

@@ -880,6 +880,7 @@ func executeOpen(vaultName string) error {
 		fmt.Printf("⏱️  Inactivity auto-lock timeout: %d minutes (resets on file saves).\n", vCfg.TimeoutMinutes)
 	}
 	fmt.Println("👉 Press Ctrl+C or type 'lock' / 'q' to safely close & wipe RAM.")
+	fmt.Println("♻️  Type 'r' / 'reopen' to restart the editor (Obsidian windows will be closed).")
 	fmt.Println("=======================================================")
 
 	sigChan := make(chan os.Signal, 1)
@@ -920,7 +921,18 @@ sessionLoop:
 				fmt.Println("\n🔒 Lock command received. Locking vault...")
 				break sessionLoop
 			}
-			fmt.Printf("\n❓ Unknown command %q. Type 'lock' or 'q' to lock the vault.\n> ", strings.TrimSpace(input))
+			if isReopenCommand(input) {
+				fmt.Println("\n♻️  Reopening editor...")
+				newProc, err := reopenEditor(editor, ws.Path, proc)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "⚠️  Could not reopen editor: %v\n> ", err)
+					proc = nil
+				} else {
+					proc = newProc
+				}
+				continue
+			}
+			fmt.Printf("\n❓ Unknown command %q. Type 'lock'/'q' to lock, 'r'/'reopen' to restart the editor.\n> ", strings.TrimSpace(input))
 		case <-timeoutChan:
 			fmt.Printf("\n⏰ %d minutes of inactivity reached! Automatically locking vault...\n", vCfg.TimeoutMinutes)
 			break sessionLoop
@@ -1275,6 +1287,38 @@ func isLockCommand(input string) bool {
 	default:
 		return false
 	}
+}
+
+// isReopenCommand reports whether the user asked to restart the editor.
+func isReopenCommand(input string) bool {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "r", "reopen":
+		return true
+	default:
+		return false
+	}
+}
+
+// reopenEditor stops the current editor, closes GUI applications that may have
+// outlived their launcher, and opens the existing RAM workspace again.
+func reopenEditor(editorName, workspacePath string, previous *runner.EditorProcess) (*runner.EditorProcess, error) {
+	if previous != nil {
+		if err := previous.Stop(); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Could not stop previous editor: %v\n", err)
+		}
+	}
+
+	if err := runner.CloseEditorApplication(editorName); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Could not close editor application: %v\n", err)
+	}
+
+	proc, err := runner.Launch(editorName, workspacePath)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Printf("📌 Editor reopened (PID: %d).\n", proc.PID)
+	return proc, nil
 }
 
 func selectVaultToConfigure(cfg *config.Config) error {
