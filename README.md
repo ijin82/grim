@@ -96,7 +96,7 @@ make install
 **Releasing:**
 ```bash
 # Runs formatting, vet, tests, race tests, version bump, build, install, commit, and tag.
-make release VERSION=0.3.0
+make release VERSION=0.3.1
 ```
 The release script never pushes. It prints the exact `git push --tags` commands for each remote.
 

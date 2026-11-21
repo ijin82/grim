@@ -16,15 +16,15 @@ Scope: findings from the initial project audit plus the security-hardening work 
 
 ## Current baseline
 
-- CLI version: `0.3.0` ([cmd/grim/main.go](cmd/grim/main.go)).
+- CLI version: `0.3.1` ([cmd/grim/main.go](cmd/grim/main.go)).
 - Go module: `github.com/ijin82/grim`.
 - Dependencies: age, fsnotify, Cobra, YAML, x/term, x/sys.
 - Tests: `go test ./...` and `go test -race ./...` pass.
 - Formatting and vet: clean.
 - Windows cross-compilation: passes.
-- Installed binary: `~/.local/bin/grim` (primary) and `~/go/bin/grim` (mirror), both v0.3.0.
+- Installed binary: `~/.local/bin/grim` (primary) and `~/go/bin/grim` (mirror), both v0.3.1.
 - Release/install process: `make release VERSION=x.y.z` via [scripts/release.sh](scripts/release.sh). The script commits, installs, and tags but never pushes; see the release checklist at the end of this file.
-- Release tag: `v0.3.0`.
+- Release tag: `v0.3.1`.
 
 ## Phase 0 — Security hardening already implemented (pending commit)
 
