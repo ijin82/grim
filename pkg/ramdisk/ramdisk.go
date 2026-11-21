@@ -111,22 +111,47 @@ func (w *Workspace) Close() error {
 	return err
 }
 
-func isFlatpakEditor(editorName string) bool {
-	lower := strings.ToLower(editorName)
-	if lower == "" || lower == "obsidian" {
-		// If native obsidian binary exists in PATH, it's native!
-		if path, err := exec.LookPath("obsidian"); err == nil && !strings.Contains(path, "flatpak") && !strings.Contains(path, "snap") {
-			return false
-		}
-		// If flatpak is installed, check if md.obsidian.Obsidian is present
-		if _, err := exec.LookPath("flatpak"); err == nil {
-			return true
-		}
+const obsidianFlatpakID = "md.obsidian.Obsidian"
+
+// isFlatpakObsidianInstalled checks for the specific Obsidian Flatpak, not
+// merely for a flatpak binary. This avoids choosing a cache workspace just
+// because the user has some unrelated Flatpak application installed.
+func isFlatpakObsidianInstalled() bool {
+	flatpakPath, err := exec.LookPath("flatpak")
+	if err != nil {
+		return false
 	}
-	if strings.Contains(lower, "flatpak") {
+	return exec.Command(flatpakPath, "info", obsidianFlatpakID).Run() == nil
+}
+
+// isSnapObsidianInstalled checks for the Obsidian Snap package.
+func isSnapObsidianInstalled() bool {
+	snapPath, err := exec.LookPath("snap")
+	if err != nil {
+		return false
+	}
+	return exec.Command(snapPath, "list", "obsidian").Run() == nil
+}
+
+func isFlatpakEditor(editorName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(editorName))
+
+	// A custom command that explicitly invokes flatpak/snap is sandboxed.
+	if strings.Contains(lower, "flatpak") || strings.Contains(lower, "snap") {
 		return true
 	}
-	return false
+
+	// Empty means the default editor, which is Obsidian.
+	if lower != "" && lower != "obsidian" {
+		return false
+	}
+
+	// A native Obsidian binary takes precedence over sandbox detection.
+	if path, err := exec.LookPath("obsidian"); err == nil {
+		return strings.Contains(path, "flatpak") || strings.Contains(path, "snap")
+	}
+
+	return isFlatpakObsidianInstalled() || isSnapObsidianInstalled()
 }
 
 // getBaseWorkspaceDir prioritizes true volatile RAM tmpfs mounts for native editors, and cache for Flatpak/Snap.

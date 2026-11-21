@@ -1,4 +1,4 @@
-.PHONY: all build install test clean
+.PHONY: all build install test clean release
 
 BINARY_NAME=grim
 
@@ -22,3 +22,7 @@ test:
 
 clean:
 	rm -f $(BINARY_NAME) cryptovault
+
+release:
+	@if [ -z "$(VERSION)" ]; then echo "usage: make release VERSION=x.y.z"; exit 1; fi
+	@./scripts/release.sh "$(VERSION)"

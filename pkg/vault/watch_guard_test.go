@@ -10,6 +10,18 @@ import (
 	"github.com/ijin82/grim/pkg/ramdisk"
 )
 
+// TestWatchAndSyncRejectsMissingLock ensures a workspace without a session
+// lock is never treated as a valid sync source.
+func TestWatchAndSyncRejectsMissingLock(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := WatchAndSync(ctx, t.TempDir(), t.TempDir(), "unused", nil, nil)
+	if err == nil {
+		t.Fatalf("WatchAndSync must fail when the workspace lock is missing")
+	}
+}
+
 // TestWatcherStopsDeletingWhenLockDisappears is a regression test for the
 // Flatpak incident: external cleanup removes .grim-lock, and the watcher must
 // not delete encrypted files from the vault afterwards.

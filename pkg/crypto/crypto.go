@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"filippo.io/age"
 	"filippo.io/age/armor"
@@ -63,53 +64,121 @@ func DecryptWithKey(ciphertext []byte, identityStr string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// EncryptFileWithKey encrypts a file on disk using the fast master key atomically.
-func EncryptFileWithKey(srcPath, dstPath string, recipientStr string) error {
-	data, err := os.ReadFile(srcPath)
+// encryptReaderToFile streams encrypted data into a temporary file and commits
+// it with an atomic rename. The source is never loaded into memory as a whole.
+func encryptReaderToFile(src io.Reader, dstPath string, recipient age.Recipient) error {
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
+		return fmt.Errorf("failed to create destination directory: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp(filepath.Dir(dstPath), ".tmp-*")
 	if err != nil {
-		return fmt.Errorf("failed to read source file %s: %w", srcPath, err)
+		return fmt.Errorf("failed to create encrypted temp file: %w", err)
 	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
 
-	encryptedData, err := EncryptWithKey(data, recipientStr)
+	writer, err := age.Encrypt(tmpFile, recipient)
 	if err != nil {
-		return fmt.Errorf("encryption error for %s: %w", srcPath, err)
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to create age encryptor: %w", err)
 	}
 
-	tmpDst := dstPath + ".tmp"
-	if err := os.WriteFile(tmpDst, encryptedData, 0600); err != nil {
-		return fmt.Errorf("failed to write encrypted temp file: %w", err)
+	if _, err := io.Copy(writer, src); err != nil {
+		_ = writer.Close()
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to stream plaintext: %w", err)
 	}
-
-	if err := os.Rename(tmpDst, dstPath); err != nil {
-		_ = os.Remove(tmpDst)
+	if err := writer.Close(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to finalize encryption: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to sync encrypted file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close encrypted file: %w", err)
+	}
+	if err := os.Rename(tmpPath, dstPath); err != nil {
 		return fmt.Errorf("failed to commit encrypted file %s: %w", dstPath, err)
 	}
 
 	return nil
 }
 
-// DecryptFileWithKey decrypts an age file on disk using the fast master key atomically.
-func DecryptFileWithKey(srcPath, dstPath string, identityStr string) error {
-	data, err := os.ReadFile(srcPath)
+// decryptReaderToFile streams decrypted data into a temporary file and commits
+// it with an atomic rename.
+func decryptReaderToFile(src io.Reader, dstPath string, identity age.Identity) error {
+	reader, err := age.Decrypt(src, identity)
 	if err != nil {
-		return fmt.Errorf("failed to read encrypted file %s: %w", srcPath, err)
+		return fmt.Errorf("decryption failed (corrupted data or wrong key): %w", err)
 	}
 
-	decryptedData, err := DecryptWithKey(data, identityStr)
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
+		return fmt.Errorf("failed to create destination directory: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp(filepath.Dir(dstPath), ".tmp-*")
 	if err != nil {
-		return fmt.Errorf("decryption error for %s: %w", srcPath, err)
+		return fmt.Errorf("failed to create decrypted temp file: %w", err)
 	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
 
-	tmpDst := dstPath + ".tmp"
-	if err := os.WriteFile(tmpDst, decryptedData, 0600); err != nil {
-		return fmt.Errorf("failed to write decrypted temp file: %w", err)
+	if _, err := io.Copy(tmpFile, reader); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to stream decrypted data: %w", err)
 	}
-
-	if err := os.Rename(tmpDst, dstPath); err != nil {
-		_ = os.Remove(tmpDst)
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to sync decrypted file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close decrypted file: %w", err)
+	}
+	if err := os.Rename(tmpPath, dstPath); err != nil {
 		return fmt.Errorf("failed to commit decrypted file %s: %w", dstPath, err)
 	}
 
+	return nil
+}
+
+// EncryptFileWithKey encrypts a file on disk using the fast master key atomically.
+func EncryptFileWithKey(srcPath, dstPath string, recipientStr string) error {
+	recipient, err := age.ParseX25519Recipient(recipientStr)
+	if err != nil {
+		return fmt.Errorf("invalid recipient key: %w", err)
+	}
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("failed to open source file %s: %w", srcPath, err)
+	}
+	defer func() { _ = src.Close() }()
+
+	if err := encryptReaderToFile(src, dstPath, recipient); err != nil {
+		return fmt.Errorf("encryption error for %s: %w", srcPath, err)
+	}
+	return nil
+}
+
+// DecryptFileWithKey decrypts an age file on disk using the fast master key atomically.
+func DecryptFileWithKey(srcPath, dstPath string, identityStr string) error {
+	identity, err := age.ParseX25519Identity(identityStr)
+	if err != nil {
+		return fmt.Errorf("invalid identity key: %w", err)
+	}
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("failed to open encrypted file %s: %w", srcPath, err)
+	}
+	defer func() { _ = src.Close() }()
+
+	if err := decryptReaderToFile(src, dstPath, identity); err != nil {
+		return fmt.Errorf("decryption error for %s: %w", srcPath, err)
+	}
 	return nil
 }
 
@@ -167,51 +236,39 @@ func Decrypt(ciphertext []byte, passphrase string) ([]byte, error) {
 
 // EncryptFile encrypts a file on disk to a destination path atomically with passphrase.
 func EncryptFile(srcPath, dstPath string, passphrase string) error {
-	data, err := os.ReadFile(srcPath)
+	recipient, err := age.NewScryptRecipient(passphrase)
 	if err != nil {
-		return fmt.Errorf("failed to read source file %s: %w", srcPath, err)
+		return fmt.Errorf("failed to create scrypt recipient: %w", err)
 	}
 
-	encryptedData, err := Encrypt(data, passphrase)
+	src, err := os.Open(srcPath)
 	if err != nil {
+		return fmt.Errorf("failed to open source file %s: %w", srcPath, err)
+	}
+	defer func() { _ = src.Close() }()
+
+	if err := encryptReaderToFile(src, dstPath, recipient); err != nil {
 		return fmt.Errorf("encryption error for %s: %w", srcPath, err)
 	}
-
-	tmpDst := dstPath + ".tmp"
-	if err := os.WriteFile(tmpDst, encryptedData, 0600); err != nil {
-		return fmt.Errorf("failed to write encrypted temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpDst, dstPath); err != nil {
-		_ = os.Remove(tmpDst)
-		return fmt.Errorf("failed to commit encrypted file %s: %w", dstPath, err)
-	}
-
 	return nil
 }
 
 // DecryptFile decrypts an age file on disk to a destination path atomically with passphrase.
 func DecryptFile(srcPath, dstPath string, passphrase string) error {
-	data, err := os.ReadFile(srcPath)
+	identity, err := age.NewScryptIdentity(passphrase)
 	if err != nil {
-		return fmt.Errorf("failed to read encrypted file %s: %w", srcPath, err)
+		return fmt.Errorf("failed to create scrypt identity: %w", err)
 	}
 
-	decryptedData, err := Decrypt(data, passphrase)
+	src, err := os.Open(srcPath)
 	if err != nil {
+		return fmt.Errorf("failed to open encrypted file %s: %w", srcPath, err)
+	}
+	defer func() { _ = src.Close() }()
+
+	if err := decryptReaderToFile(src, dstPath, identity); err != nil {
 		return fmt.Errorf("decryption error for %s: %w", srcPath, err)
 	}
-
-	tmpDst := dstPath + ".tmp"
-	if err := os.WriteFile(tmpDst, decryptedData, 0600); err != nil {
-		return fmt.Errorf("failed to write decrypted temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpDst, dstPath); err != nil {
-		_ = os.Remove(tmpDst)
-		return fmt.Errorf("failed to commit decrypted file %s: %w", dstPath, err)
-	}
-
 	return nil
 }
 

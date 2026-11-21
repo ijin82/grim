@@ -32,8 +32,11 @@ func Launch(editorName string, targetPath string) (*EditorProcess, error) {
 	isTerminal := isTerminalEditor(lower)
 
 	if isObsidian {
-		// Automatically register the vault path in obsidian.json so Obsidian knows it
-		RegisterObsidianVault(targetPath)
+		// Automatically register the vault path in obsidian.json so Obsidian knows it.
+		// Registry failures are reported but must not prevent the editor from launching.
+		if err := RegisterObsidianVault(targetPath); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Could not update Obsidian registry: %v\n", err)
+		}
 	}
 
 	cmdName, args := resolveEditorCommand(editorName, targetPath)
@@ -171,7 +174,9 @@ func (p *EditorProcess) Stop() error {
 	}
 
 	if p.IsObsidian && p.TargetPath != "" {
-		UnregisterObsidianVault(p.TargetPath)
+		if err := UnregisterObsidianVault(p.TargetPath); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Could not clean up Obsidian registry: %v\n", err)
+		}
 	}
 
 	if p.Cmd == nil || p.Cmd.Process == nil {

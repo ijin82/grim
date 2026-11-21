@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -15,17 +16,21 @@ import (
 	"github.com/ijin82/grim/pkg/runner"
 )
 
-func setupPhase2Env(t *testing.T) (home string, runDir string) {
+func setupPhase2Env(t *testing.T) (home string) {
 	t.Helper()
 	home = t.TempDir()
-	runDir = filepath.Join(t.TempDir(), "run")
+	runDir := filepath.Join(t.TempDir(), "run")
 	if err := os.MkdirAll(runDir, 0700); err != nil {
 		t.Fatalf("failed to create runtime dir: %v", err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_RUNTIME_DIR", runDir)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("PATH", t.TempDir())
-	return home, runDir
+	return home
 }
 
 func TestSortedVaultNames(t *testing.T) {
@@ -45,9 +50,9 @@ func TestSortedVaultNames(t *testing.T) {
 }
 
 func TestLockVaultWipesStaleWorkspace(t *testing.T) {
-	_, runDir := setupPhase2Env(t)
+	_ = setupPhase2Env(t)
 	const vaultName = "stale-lock-test"
-	wsPath := filepath.Join(runDir, "grim", "grim-"+vaultName)
+	wsPath := ramdisk.GetPath(vaultName)
 	if err := os.MkdirAll(wsPath, 0700); err != nil {
 		t.Fatalf("failed to create stale workspace: %v", err)
 	}
@@ -64,7 +69,7 @@ func TestLockVaultWipesStaleWorkspace(t *testing.T) {
 }
 
 func TestLockVaultRefusesCurrentProcess(t *testing.T) {
-	_, _ = setupPhase2Env(t)
+	_ = setupPhase2Env(t)
 	const vaultName = "active-lock-test"
 	ws, err := ramdisk.NewForEditor(vaultName, "")
 	if err != nil {
@@ -81,9 +86,12 @@ func TestLockVaultRefusesCurrentProcess(t *testing.T) {
 }
 
 func TestLockVaultSendsGracefulSignal(t *testing.T) {
-	_, runDir := setupPhase2Env(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix signal-based lock test")
+	}
+	_ = setupPhase2Env(t)
 	const vaultName = "signal-lock-test"
-	wsPath := filepath.Join(runDir, "grim", "grim-"+vaultName)
+	wsPath := ramdisk.GetPath(vaultName)
 	if err := os.MkdirAll(wsPath, 0700); err != nil {
 		t.Fatalf("failed to create workspace: %v", err)
 	}
@@ -119,10 +127,26 @@ func TestLockVaultSendsGracefulSignal(t *testing.T) {
 	}
 }
 
+func obsidianConfigDirForTest(t *testing.T, home string) string {
+	t.Helper()
+	switch runtime.GOOS {
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			t.Fatalf("APPDATA is not set")
+		}
+		return filepath.Join(appData, "obsidian")
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "obsidian")
+	default:
+		return filepath.Join(home, ".config", "obsidian")
+	}
+}
+
 func TestCleanupStaleWorkspacesUnregistersObsidian(t *testing.T) {
-	home, runDir := setupPhase2Env(t)
+	home := setupPhase2Env(t)
 	const vaultName = "obsidian-cleanup-test"
-	wsPath := filepath.Join(runDir, "grim", "grim-"+vaultName)
+	wsPath := ramdisk.GetPath(vaultName)
 	if err := os.MkdirAll(wsPath, 0700); err != nil {
 		t.Fatalf("failed to create stale workspace: %v", err)
 	}
@@ -130,11 +154,13 @@ func TestCleanupStaleWorkspacesUnregistersObsidian(t *testing.T) {
 		t.Fatalf("failed to write stale lock: %v", err)
 	}
 
-	obsidianDir := filepath.Join(home, ".config", "obsidian")
+	obsidianDir := obsidianConfigDirForTest(t, home)
 	if err := os.MkdirAll(obsidianDir, 0700); err != nil {
 		t.Fatalf("failed to create obsidian config dir: %v", err)
 	}
-	runner.RegisterObsidianVault(wsPath)
+	if err := runner.RegisterObsidianVault(wsPath); err != nil {
+		t.Fatalf("failed to register workspace in Obsidian: %v", err)
+	}
 
 	cleaned := cleanupStaleWorkspaces()
 	found := false

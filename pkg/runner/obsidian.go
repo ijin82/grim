@@ -4,6 +4,8 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -50,23 +52,34 @@ func findObsidianConfigFiles() []string {
 }
 
 // RegisterObsidianVault ensures the target path is registered in Obsidian's known vaults list.
-func RegisterObsidianVault(vaultPath string) {
+// It returns an aggregated error when an existing registry cannot be read,
+// parsed, or written; a missing Obsidian config directory is not an error.
+func RegisterObsidianVault(vaultPath string) error {
 	candidates := findObsidianConfigFiles()
 
 	h := md5.Sum([]byte(vaultPath))
 	vaultID := hex.EncodeToString(h[:8]) // 16-hex characters
 
+	var errs []error
 	for _, cfgPath := range candidates {
 		dir := filepath.Dir(cfgPath)
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if _, err := os.Stat(dir); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			errs = append(errs, fmt.Errorf("failed to inspect Obsidian config dir %s: %w", dir, err))
 			continue
 		}
 
-		var cfg obsidianConfig
-		cfg.Vaults = make(map[string]obsidianVaultEntry)
-
+		cfg := obsidianConfig{Vaults: make(map[string]obsidianVaultEntry)}
 		if data, err := os.ReadFile(cfgPath); err == nil {
-			_ = json.Unmarshal(data, &cfg)
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				errs = append(errs, fmt.Errorf("failed to parse Obsidian config %s: %w", cfgPath, err))
+				continue
+			}
+		} else if !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("failed to read Obsidian config %s: %w", cfgPath, err))
+			continue
 		}
 
 		if cfg.Vaults == nil {
@@ -80,24 +93,39 @@ func RegisterObsidianVault(vaultPath string) {
 			Open: true,
 		}
 
-		if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
-			_ = os.WriteFile(cfgPath, data, 0600)
+		data, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to serialize Obsidian config %s: %w", cfgPath, err))
+			continue
+		}
+		if err := os.WriteFile(cfgPath, data, 0600); err != nil {
+			errs = append(errs, fmt.Errorf("failed to write Obsidian config %s: %w", cfgPath, err))
 		}
 	}
+
+	return errors.Join(errs...)
 }
 
 // UnregisterObsidianVault cleans up the vault entry from Obsidian's known vaults list.
-func UnregisterObsidianVault(vaultPath string) {
+// It returns an aggregated error for registry files that exist but cannot be
+// read, parsed, or written.
+func UnregisterObsidianVault(vaultPath string) error {
 	candidates := findObsidianConfigFiles()
 
+	var errs []error
 	for _, cfgPath := range candidates {
 		data, err := os.ReadFile(cfgPath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			errs = append(errs, fmt.Errorf("failed to read Obsidian config %s: %w", cfgPath, err))
 			continue
 		}
 
 		var cfg obsidianConfig
 		if err := json.Unmarshal(data, &cfg); err != nil {
+			errs = append(errs, fmt.Errorf("failed to parse Obsidian config %s: %w", cfgPath, err))
 			continue
 		}
 
@@ -109,10 +137,19 @@ func UnregisterObsidianVault(vaultPath string) {
 			}
 		}
 
-		if changed {
-			if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
-				_ = os.WriteFile(cfgPath, data, 0600)
-			}
+		if !changed {
+			continue
+		}
+
+		data, err = json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to serialize Obsidian config %s: %w", cfgPath, err))
+			continue
+		}
+		if err := os.WriteFile(cfgPath, data, 0600); err != nil {
+			errs = append(errs, fmt.Errorf("failed to write Obsidian config %s: %w", cfgPath, err))
 		}
 	}
+
+	return errors.Join(errs...)
 }

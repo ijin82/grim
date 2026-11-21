@@ -4,6 +4,10 @@ A lightweight, high-performance CLI tool for managing secure, encrypted Markdown
 
 Powered by [`filippo.io/age`](https://github.com/FiloSottile/age) (X25519 Master Key Architecture + Scrypt KDF) and written in pure Go.
 
+## 🔐 Security
+
+See [SECURITY.md](SECURITY.md) for the threat model, supported versions, known limitations, and the private vulnerability-reporting process. Please do not open a public issue for a security vulnerability.
+
 ### 💖 Acknowledgments & Credits
 
 - **[Filippo Valsorda](https://github.com/FiloSottile)** — Author and creator of the [`age`](https://filippo.io/age) encryption tool and format.
@@ -88,6 +92,13 @@ go build -o grim ./cmd/grim
 # or with Makefile:
 make install
 ```
+
+**Releasing:**
+```bash
+# Runs formatting, vet, tests, race tests, version bump, build, install, commit, and tag.
+make release VERSION=0.3.0
+```
+The release script never pushes. It prints the exact `git push --tags` commands for each remote.
 
 ---
 

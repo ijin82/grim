@@ -118,3 +118,34 @@ func TestEncryptDecryptFile(t *testing.T) {
 		t.Fatalf("Decrypted file content mismatch. Got: %s, Want: %s", decryptedContent, content)
 	}
 }
+
+func TestEncryptDecryptLargeFile(t *testing.T) {
+	tempDir := t.TempDir()
+	srcFile := filepath.Join(tempDir, "large.bin")
+	encFile := filepath.Join(tempDir, "large.bin.age")
+	decFile := filepath.Join(tempDir, "large_dec.bin")
+
+	content := bytes.Repeat([]byte("0123456789abcdef"), 256*1024) // 4 MiB
+	if err := os.WriteFile(srcFile, content, 0600); err != nil {
+		t.Fatalf("failed to write large source file: %v", err)
+	}
+
+	identity, recipient, err := GenerateMasterKey()
+	if err != nil {
+		t.Fatalf("GenerateMasterKey failed: %v", err)
+	}
+	if err := EncryptFileWithKey(srcFile, encFile, recipient); err != nil {
+		t.Fatalf("EncryptFileWithKey failed: %v", err)
+	}
+	if err := DecryptFileWithKey(encFile, decFile, identity); err != nil {
+		t.Fatalf("DecryptFileWithKey failed: %v", err)
+	}
+
+	decrypted, err := os.ReadFile(decFile)
+	if err != nil {
+		t.Fatalf("failed to read decrypted file: %v", err)
+	}
+	if !bytes.Equal(decrypted, content) {
+		t.Fatalf("large file content mismatch")
+	}
+}

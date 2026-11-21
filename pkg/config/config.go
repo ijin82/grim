@@ -123,8 +123,29 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("failed to serialize config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write config to %s: %w", path, err)
+	tmpFile, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary config file in %s: %w", dir, err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to write temporary config file %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to sync temporary config file %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary config file %s: %w", tmpPath, err)
+	}
+
+	// Atomic replacement: a crash either keeps the old config or exposes the
+	// fully written new one, never a truncated YAML file.
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to replace config %s: %w", path, err)
 	}
 
 	return nil

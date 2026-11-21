@@ -1,6 +1,9 @@
 package runner
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -29,17 +32,29 @@ func TestRunnerCommandResolution(t *testing.T) {
 }
 
 func TestRunnerLifecycle(t *testing.T) {
-	// Launch a dummy sleep process
-	proc, err := Launch("sleep 10", "/tmp")
-	if err != nil {
-		t.Fatalf("Failed to launch test process: %v", err)
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-based lifecycle test is Unix-specific")
 	}
 
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	script := filepath.Join(t.TempDir(), "fake-editor.sh")
+	body := "#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n"
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("failed to write fake editor: %v", err)
+	}
+
+	target := t.TempDir()
+	proc, err := Launch(script, target)
+	if err != nil {
+		t.Fatalf("failed to launch fake editor: %v", err)
+	}
 	if proc.PID <= 0 {
-		t.Fatalf("Expected valid PID, got %d", proc.PID)
+		t.Fatalf("expected valid PID, got %d", proc.PID)
 	}
 
 	if err := proc.Stop(); err != nil {
-		t.Fatalf("Failed to stop process: %v", err)
+		t.Fatalf("failed to stop fake editor: %v", err)
 	}
 }

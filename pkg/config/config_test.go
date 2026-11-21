@@ -120,3 +120,34 @@ func TestDefaultConfigPathFor(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigSaveIsAtomic(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.yaml")
+
+	cfg := &Config{
+		DefaultEditor: "obsidian",
+		Vaults: map[string]VaultConfig{
+			"work": {Path: "/vaults/work", TimeoutMinutes: 30},
+		},
+	}
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatalf("Config.Save failed: %v", err)
+	}
+
+	loaded, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if _, exists := loaded.Vaults["work"]; !exists {
+		t.Fatalf("saved vault is missing from loaded config")
+	}
+
+	leftovers, err := filepath.Glob(filepath.Join(tempDir, ".config-*.tmp"))
+	if err != nil {
+		t.Fatalf("glob failed: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temporary config files were left behind: %v", leftovers)
+	}
+}

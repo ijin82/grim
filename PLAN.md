@@ -297,110 +297,119 @@ Manual check:
 
 ## Phase 3 — Robustness, performance, and portability
 
+### ENV-01 — Flatpak Obsidian detection was imprecise
+`[x]` `P2`
+
+Problem: any installed `flatpak` binary caused `obsidian`/default editor to use the cache workspace, even when the Obsidian Flatpak itself was absent. Native Obsidian could also lose to sandbox detection depending on PATH.
+
+Implemented:
+- Native `obsidian` in PATH wins.
+- Flatpak mode requires `flatpak info md.obsidian.Obsidian` to succeed.
+- Snap mode requires the Snap package or a snap wrapper path.
+- Custom commands containing `flatpak`/`snap` still use the cache.
+
+Tests:
+- [pkg/ramdisk/flatpak_test.go](pkg/ramdisk/flatpak_test.go) covers native, missing Flatpak, unrelated Flatpak, snap, and non-Obsidian editors.
+
 ### CFG-03 — Config writes are not atomic
-`[ ]` `P3`
+`[x]` `P3`
 
-Problem: `Config.Save` writes directly to the target file. A crash during write can leave a truncated YAML config.
+Implemented:
+- `Config.Save` writes a unique temporary file in the config directory, fsyncs it, and atomically renames it over `config.yaml`.
+- Temporary files are removed on failure.
 
-Proposed fix:
-- Write to `config.yaml.tmp`, fsync, then rename.
-- Use the same pattern already used for encrypted files.
+Tests:
+- [pkg/config/config_test.go](pkg/config/config_test.go) verifies reload and absence of temporary leftovers.
 
 ### PERF-01 — Files are read entirely into memory
-`[ ]` `P3`
+`[x]` `P3`
 
-Problem: crypto and sync functions use `os.ReadFile`, which spikes memory for large attachments and plugin bundles.
+Implemented:
+- File encryption/decryption now streams through `io.Reader`/`io.Writer` with atomic temp-file + rename.
+- SHA-256 deduplication and watcher hash seeding stream files instead of using `os.ReadFile`.
+- `EncryptFileWithKey`, `DecryptFileWithKey`, `EncryptFile`, and `DecryptFile` no longer load whole files.
 
-Proposed fix:
-- Stream encryption/decryption through `io.Reader`/`io.Writer`.
-- Keep atomic temp-file + rename semantics.
-- Add a test with a large sparse file if practical.
+Tests:
+- [pkg/crypto/crypto_test.go](pkg/crypto/crypto_test.go) includes a 4 MiB file round-trip.
 
 ### ERR-01 — Watcher errors are swallowed
-`[ ]` `P3`
+`[x]` `P3`
 
-Problem: the watcher goroutine ignores `WatchAndSync`'s error. If inotify limits are reached or the watcher fails to start, the user believes live sync is active.
+Implemented:
+- `WatchAndSync` returns fsnotify errors instead of ignoring them.
+- `executeOpen` listens on a watcher error channel, reports the error, and locks the vault safely.
 
-Proposed fix:
-- Propagate watcher errors to the session.
-- Print a clear warning and recommend restarting after fixing the cause.
+Tests:
+- [pkg/vault/watch_guard_test.go](pkg/vault/watch_guard_test.go) covers refusal to start without a lock.
 
 ### OBS-02 — Obsidian registry write errors are ignored
-`[ ]` `P3`
+`[x]` `P3`
 
-Problem: `RegisterObsidianVault` and `UnregisterObsidianVault` silently ignore read/write errors. A read-only or malformed `obsidian.json` leaves stale entries without any feedback.
+Implemented:
+- `RegisterObsidianVault` and `UnregisterObsidianVault` return aggregated errors.
+- Malformed or unreadable `obsidian.json` is no longer overwritten.
+- Editor launch and vault locking print warnings but continue safely.
 
-Proposed fix:
-- Return errors from registry operations.
-- Log or surface failures without making editor launch fail.
-- Add tests for malformed and read-only registry files.
-
-### INST-01 — `grim install` portability and atomicity
-`[ ]` `P3`
-
-Problem: `install` uses `$HOME` and a direct copy. On Windows, `HOME` may be unset, and a partial copy can leave a broken binary.
-
-Proposed fix:
-- Use `os.UserHomeDir()`.
-- Copy to a temporary file, chmod, then rename.
-- Add platform-specific tests where possible.
+Tests:
+- [pkg/runner/obsidian_test.go](pkg/runner/obsidian_test.go) covers register/unregister, malformed JSON, and missing registry.
 
 ### TEST-01 — Some tests are not hermetic
-`[ ]` `P3`
+`[x]` `P3`
 
-Problem: several tests call `ramdisk.New`, which writes into the real runtime/cache directory, and some ignore errors from `New` or `Launch`. On failure they can panic instead of reporting a useful message.
-
-Proposed fix:
-- Allow tests to inject a base workspace directory.
-- Replace ignored errors with `t.Fatal`.
-- Keep Unicode fixtures, but isolate them under `t.TempDir()`.
+Implemented:
+- `cmd/grim` and `pkg/ramdisk` tests run under `TestMain` with isolated `HOME`, `XDG_RUNTIME_DIR`, `XDG_CACHE_HOME`, `TMPDIR`, `APPDATA`, `LOCALAPPDATA`, and `USERPROFILE`.
+- `cmd/grim` advanced tests use `mustNewWorkspace`, which reports workspace creation failures with `t.Fatalf` instead of panicking on a nil workspace.
+- Linux-specific workspace cleanup and shell-based tests are skipped on unsupported platforms.
+- Piped/non-TTY passphrase tests and platform-specific path tests are separated from the default test environment.
 
 ### TEST-02 — Runner lifecycle test does not test a live process
-`[ ]` `P3`
+`[x]` `P3`
 
-Problem: `TestRunnerLifecycle` launches `sleep 10` with the target path appended, which makes `sleep` fail immediately rather than testing a running process.
+Implemented:
+- The test launches a blocking shell helper that ignores arguments, waits for `SIGINT`, and verifies `Stop`.
+- Windows skips the Unix shell-specific test.
 
-Proposed fix:
-- Use a helper process/script that ignores arguments and blocks.
-- Verify stop semantics and timeout behavior.
+### INST-01 — `grim install` portability and atomicity
+`[x]` `P3`
+
+Implemented:
+- `install` resolves the home directory through `os.UserHomeDir()` instead of `$HOME`.
+- The binary is copied into a unique temporary file in the destination directory, fsynced, chmodded to `0755`, and atomically renamed into place.
+- Same-path installation is a no-op; failures remove the temporary file.
+- `/usr/local/bin` is attempted first, then `~/.local/bin`.
+
+Tests:
+- [cmd/grim/install_test.go](cmd/grim/install_test.go) covers targets, first install, overwrite, same-path no-op, and cleanup on failure.
 
 ## Phase 4 — Tooling, CI, and release process
 
 ### CI-01 — No CI pipeline
-`[ ]` `P3`
+`[x]` `P3`
 
-Proposed:
-- GitHub Actions matrix: Linux, macOS, Windows.
-- Steps: `gofmt -l`, `go vet`, `go test`, `go test -race` on Linux, `GOOS=windows go build`.
-- No secrets required for tests.
+Implemented:
+- [.github/workflows/ci.yml](.github/workflows/ci.yml) runs formatting, vet, tests, and Linux race tests on Ubuntu and macOS.
+- A separate job cross-builds `windows/amd64`.
+- Windows native runtime tests are intentionally not part of CI yet; they need a dedicated runner or platform-specific test pass.
 
 ### RELEASE-01 — Release process is fully manual
-`[ ]` `P3`
+`[x]` `P3`
 
-Current process:
-1. Update `Version` in [cmd/grim/main.go](cmd/grim/main.go).
-2. Commit the bump.
-3. Create an annotated tag.
-4. Push the branch and tag to all remotes.
-5. Build and install.
+Implemented:
+- [scripts/release.sh](scripts/release.sh) verifies a clean tree, runs formatting/vet/tests/race tests, bumps the version, builds, installs, commits, and creates an annotated tag.
+- `make release VERSION=x.y.z` wraps the script.
+- The script never pushes; it prints the exact push commands.
+- The manual fallback is documented in [README.md](README.md).
 
-Proposed:
-- Add `make release VERSION=x.y.z` or a small `scripts/release.sh` that:
-  - verifies a clean working tree;
-  - runs formatting, vet, tests, and race tests;
-  - updates `Version`;
-  - builds and installs;
-  - creates the tag and prints the exact push commands.
-- Add a `RELEASING.md` describing the manual fallback.
-- Do not push automatically.
+Remaining:
+- A separate `RELEASING.md` is optional; README currently holds the short release instructions.
 
 ### DOC-03 — No SECURITY.md or threat model
-`[ ]` `P3`
+`[x]` `P3`
 
-Proposed:
-- Document the trust boundary: passphrase, master key, encrypted vault, RAM workspace, cache fallback, editor sandbox.
-- Document known limitations: passphrase rotation, metadata rollback in git, wipe guarantees on SSD/COW filesystems, Flatpak PID namespaces.
-- Add a responsible-disclosure contact.
+Implemented:
+- Added [SECURITY.md](SECURITY.md) with supported versions, private vulnerability reporting, scope, assets, trust boundaries, security properties, and known limitations.
+- Documented the non-tmpfs workspace fallback, passphrase non-rotation, metadata leakage, rollback risk, wipe limits, Obsidian Sync risk, `BASH_ENV`, and Windows lock behavior.
+- Added a short security section with a link in [README.md](README.md).
 
 ## Known minor issues / backlog
 
@@ -408,19 +417,18 @@ Proposed:
 - Symlinks inside the RAM workspace are followed by sync; define and document the expected behavior.
 - File modes and timestamps are not preserved exactly (decrypted files use `0600`).
 - `obsidian.json` is rewritten with `0600`; verify this matches Obsidian expectations.
-- `RegisterObsidianVault` silently ignores write errors.
 - `CleanupStaleWorkspaces` still runs for broad commands such as `list` and `status`; with flock this is safe, but consider narrowing it further.
-- `getBaseWorkspaceDir` treats any installed Flatpak as evidence of a Flatpak Obsidian; make detection more precise.
+- A legacy plaintext `.gitignore` in the vault is not removed when the new encrypted `.gitignore.age` is created.
+- Graceful `grim lock` relies on `SIGINT`; Windows currently returns a safe error instead of a graceful shutdown.
 - `go.mod` has `go 1.26.5`; verify the intended minimum Go version before release.
 - README quick-start examples should be checked after the next version bump.
 - Release notes and version references are duplicated manually; keep them in sync.
 
 ## Suggested execution order
 
-1. Review, manually verify, and commit Phase 2.
-2. Add SEC-05b: true master-key rotation with staged re-encryption and rollback.
-3. Add CI and release automation.
-4. Work through Phase 3 by priority (ERR-01 and OBS-02 first).
+1. Review, manually verify, and commit Phase 3.
+2. Optionally implement SEC-05b (true master-key rotation).
+3. Polish the backlog items as needed.
 
 ## Release checklist (current manual process)
 

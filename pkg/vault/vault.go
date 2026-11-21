@@ -301,6 +301,24 @@ func shouldSyncVaultFile(relPath string) bool {
 	return true
 }
 
+// hashFile computes a SHA-256 checksum without loading the whole file into memory.
+func hashFile(path string) ([32]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	defer func() { _ = file.Close() }()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return [32]byte{}, err
+	}
+
+	var sum [32]byte
+	copy(sum[:], hasher.Sum(nil))
+	return sum, nil
+}
+
 func syncFileWithTracker(ramFilePath string, ramRoot string, vaultRoot string, pubKey string, tracker *SyncTracker) (bool, error) {
 	relPath, err := filepath.Rel(ramRoot, ramFilePath)
 	if err != nil {
@@ -311,12 +329,10 @@ func syncFileWithTracker(ramFilePath string, ramRoot string, vaultRoot string, p
 		return false, nil
 	}
 
-	data, err := os.ReadFile(ramFilePath)
+	currentHash, err := hashFile(ramFilePath)
 	if err != nil {
 		return false, err
 	}
-
-	currentHash := sha256.Sum256(data)
 	vaultFilePath := filepath.Join(vaultRoot, relPath+AgeExt)
 
 	// Deduplication: if content hash matches existing state and target .age exists, skip re-encryption!
@@ -507,8 +523,8 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 			if d.IsDir() {
 				_ = watcher.Add(path)
 			} else {
-				if data, err := os.ReadFile(path); err == nil {
-					tracker.Set(relPath, sha256.Sum256(data))
+				if sum, err := hashFile(path); err == nil {
+					tracker.Set(relPath, sum)
 				}
 			}
 		}
@@ -656,9 +672,12 @@ func WatchAndSync(ctx context.Context, ramRoot string, vaultRoot string, pubKey 
 			})
 			mu.Unlock()
 
-		case _, ok := <-watcher.Errors:
+		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("fsnotify error: %w", err)
 			}
 		}
 	}

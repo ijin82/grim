@@ -132,7 +132,7 @@ func Test2_BinaryAttachmentsIntegrity(t *testing.T) {
 	}
 
 	// Re-unlock in a new workspace and verify sha256 checksum
-	ws2, _ := ramdisk.New("test2-bin-verify")
+	ws2 := mustNewWorkspace(t, "test2-bin-verify")
 	defer func() { _ = ws2.Destroy() }()
 
 	if err := vault.Unlock(vaultPath, ws2.Path, meta); err != nil {
@@ -166,7 +166,7 @@ func Test3_DeepNestedFolderAndPrune(t *testing.T) {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
-	ws, _ := ramdisk.New("test3-deep")
+	ws := mustNewWorkspace(t, "test3-deep")
 	defer func() { _ = ws.Destroy() }()
 
 	if err := vault.Unlock(vaultPath, ws.Path, meta); err != nil {
@@ -236,7 +236,7 @@ func Test3_DeepNestedFolderAndPrune(t *testing.T) {
 		t.Fatalf("Lock failed: %v", err)
 	}
 
-	wsReopened, _ := ramdisk.New("test3-reopen")
+	wsReopened := mustNewWorkspace(t, "test3-reopen")
 	defer func() { _ = wsReopened.Destroy() }()
 
 	if err := vault.Unlock(vaultPath, wsReopened.Path, meta); err != nil {
@@ -292,7 +292,7 @@ func Test4_AtomicPassphraseMigration(t *testing.T) {
 		t.Fatalf("Verify with new pass failed: %v", err)
 	}
 
-	ws, _ := ramdisk.New("test4-migration")
+	ws := mustNewWorkspace(t, "test4-migration")
 	defer func() { _ = ws.Destroy() }()
 
 	if err := vault.Unlock(vaultPath, ws.Path, newMeta); err != nil {
@@ -326,7 +326,7 @@ func Test5_LiveWatcherConcurrencyStress(t *testing.T) {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
-	ws, _ := ramdisk.New("test5-stress")
+	ws := mustNewWorkspace(t, "test5-stress")
 	defer func() { _ = ws.Destroy() }()
 
 	if err := vault.Unlock(vaultPath, ws.Path, meta); err != nil {
@@ -395,7 +395,7 @@ func Test6_FolderCopyAndNestedSync(t *testing.T) {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
-	ws, _ := ramdisk.New("test6-copy")
+	ws := mustNewWorkspace(t, "test6-copy")
 	defer func() { _ = ws.Destroy() }()
 
 	if err := vault.Unlock(vaultPath, ws.Path, meta); err != nil {
@@ -443,7 +443,7 @@ func Test6_FolderCopyAndNestedSync(t *testing.T) {
 	}
 
 	// Reopen in a new workspace and verify content fidelity
-	wsReopen, _ := ramdisk.New("test6-reopen")
+	wsReopen := mustNewWorkspace(t, "test6-reopen")
 	defer func() { _ = wsReopen.Destroy() }()
 
 	if err := vault.Unlock(vaultPath, wsReopen.Path, meta); err != nil {
@@ -474,7 +474,7 @@ func Test7_ContentHashDeduplication(t *testing.T) {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
-	ws, _ := ramdisk.New("test7-dedup")
+	ws := mustNewWorkspace(t, "test7-dedup")
 	defer func() { _ = ws.Destroy() }()
 
 	if err := vault.Unlock(vaultPath, ws.Path, meta); err != nil {
@@ -557,7 +557,7 @@ func Test8_ExitWithoutChangesProducesZeroGitDiff(t *testing.T) {
 	}
 
 	// 1. Create 5 initial notes in vault
-	wsSetup, _ := ramdisk.New("test8-setup")
+	wsSetup := mustNewWorkspace(t, "test8-setup")
 	_ = vault.Unlock(vaultPath, wsSetup.Path, meta)
 	for i := 1; i <= 5; i++ {
 		_ = os.WriteFile(filepath.Join(wsSetup.Path, fmt.Sprintf("note_%d.md", i)), []byte(fmt.Sprintf("Static Note Content %d", i)), 0600)
@@ -577,7 +577,7 @@ func Test8_ExitWithoutChangesProducesZeroGitDiff(t *testing.T) {
 	}
 
 	// 3. Open session (simulate user opening grim, reading notes, and editing ONLY note_3.md)
-	wsSession, _ := ramdisk.New("test8-session")
+	wsSession := mustNewWorkspace(t, "test8-session")
 	defer func() { _ = wsSession.Destroy() }()
 
 	if err := vault.Unlock(vaultPath, wsSession.Path, meta); err != nil {

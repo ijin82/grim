@@ -3,6 +3,7 @@ package ramdisk
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -34,6 +35,9 @@ func TestWorkspaceLockMarksSessionActive(t *testing.T) {
 }
 
 func TestCleanupSkipsLockedWorkspace(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cleanup base-directory layout is Linux-specific")
+	}
 	base := t.TempDir()
 	home := filepath.Join(base, "home")
 	runDir := filepath.Join(base, "run")

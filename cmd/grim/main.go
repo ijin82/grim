@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -537,7 +538,7 @@ func lockVault(vaultName string) error {
 			if err := ramdisk.WipeAndRemove(path); err != nil {
 				return fmt.Errorf("failed to wipe stale RAM workspace %s: %w", path, err)
 			}
-			runner.UnregisterObsidianVault(path)
+			unregisterObsidianWorkspace(path)
 		}
 
 		fmt.Printf("🧹 Vault '%s' locked.\n", vaultName)
@@ -549,7 +550,7 @@ func lockVault(vaultName string) error {
 		if err := ramdisk.WipeAndRemove(path); err != nil {
 			return fmt.Errorf("failed to wipe RAM workspace %s: %w", path, err)
 		}
-		runner.UnregisterObsidianVault(path)
+		unregisterObsidianWorkspace(path)
 	}
 
 	fmt.Printf("🧹 RAM workspace for '%s' wiped and locked.\n", vaultName)
@@ -848,15 +849,18 @@ func executeOpen(vaultName string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	watchErr := make(chan error, 1)
 	go func() {
-		_ = vault.WatchAndSync(ctx, ws.Path, vCfg.Path, meta.PublicKey, tracker, func(event, relPath string) {
+		if err := vault.WatchAndSync(ctx, ws.Path, vCfg.Path, meta.PublicKey, tracker, func(event, relPath string) {
 			resetInactivityTimer()
 			if event == "BLOCKED" {
 				fmt.Fprintf(os.Stderr, "\n⚠️  Sync disabled: workspace integrity lost (%s). Vault files were not modified.\n> ", relPath)
 				return
 			}
 			fmt.Printf("\r⚡ [%s] Auto-encrypted: %s\n> ", event, relPath)
-		})
+		}); err != nil {
+			watchErr <- err
+		}
 	}()
 
 	// 6. Launch editor
@@ -923,6 +927,9 @@ sessionLoop:
 		case <-editorWait:
 			fmt.Println("\n🚪 Editor closed. Locking vault...")
 			break sessionLoop
+		case err := <-watchErr:
+			fmt.Fprintf(os.Stderr, "\n⚠️  Live sync stopped: %v\n", err)
+			break sessionLoop
 		}
 	}
 
@@ -941,7 +948,7 @@ sessionLoop:
 		return fmt.Errorf("error during lock: %w", err)
 	}
 
-	runner.UnregisterObsidianVault(ws.Path)
+	unregisterObsidianWorkspace(ws.Path)
 	fmt.Println("✨ Vault safely locked. All temporary plaintext wiped from RAM.")
 	return nil
 }
@@ -1355,6 +1362,15 @@ func configureVaultInteractive(cfg *config.Config, vaultName string, v config.Va
 	return nil
 }
 
+// installTargets returns candidate installation paths in priority order.
+func installTargets(home string) []string {
+	targets := []string{"/usr/local/bin/grim"}
+	if home != "" {
+		targets = append(targets, filepath.Join(home, ".local", "bin", "grim"))
+	}
+	return targets
+}
+
 var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install grim binary to system PATH (/usr/local/bin or ~/.local/bin)",
@@ -1364,23 +1380,26 @@ var installCmd = &cobra.Command{
 			return fmt.Errorf("failed to determine executable path: %w", err)
 		}
 
-		targetDirs := []string{"/usr/local/bin", filepath.Join(os.Getenv("HOME"), ".local", "bin")}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("failed to determine user home directory: %w", err)
+		}
+
+		targets := installTargets(home)
+		var installErrs []error
 		var installedPath string
 
-		// Try /usr/local/bin first
-		targetPath := "/usr/local/bin/grim"
-		if err := copyExecutable(exePath, targetPath); err == nil {
-			installedPath = targetPath
-		} else {
-			// Try ~/.local/bin
-			userBin := filepath.Join(os.Getenv("HOME"), ".local", "bin")
-			_ = os.MkdirAll(userBin, 0755)
-			targetPath = filepath.Join(userBin, "grim")
-			if err := copyExecutable(exePath, targetPath); err == nil {
-				installedPath = targetPath
-			} else {
-				return fmt.Errorf("failed to install to %v (try running with sudo: 'sudo grim install'): %w", targetDirs, err)
+		for _, targetPath := range targets {
+			if err := copyExecutableAtomic(exePath, targetPath); err != nil {
+				installErrs = append(installErrs, fmt.Errorf("%s: %w", targetPath, err))
+				continue
 			}
+			installedPath = targetPath
+			break
+		}
+
+		if installedPath == "" {
+			return fmt.Errorf("failed to install grim (try running with sudo: 'sudo grim install'): %w", errors.Join(installErrs...))
 		}
 
 		fmt.Printf("🎉 Grim successfully installed to: %s\n", installedPath)
@@ -1391,21 +1410,61 @@ var installCmd = &cobra.Command{
 	},
 }
 
-func copyExecutable(src, dst string) error {
+// copyExecutableAtomic copies src into dst through a temporary file in the
+// destination directory, fsyncs it, sets executable permissions, and renames
+// it into place. A failed copy never leaves a partially written binary.
+func copyExecutableAtomic(src, dst string) error {
+	srcAbs, err := filepath.Abs(src)
+	if err != nil {
+		return fmt.Errorf("failed to resolve source path: %w", err)
+	}
+	dstAbs, err := filepath.Abs(dst)
+	if err != nil {
+		return fmt.Errorf("failed to resolve destination path: %w", err)
+	}
+	if srcAbs == dstAbs {
+		return nil
+	}
+
+	dstDir := filepath.Dir(dst)
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return fmt.Errorf("failed to create destination directory %s: %w", dstDir, err)
+	}
+
 	in, err := os.Open(src)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open source binary: %w", err)
 	}
 	defer func() { _ = in.Close() }()
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	tmpFile, err := os.CreateTemp(dstDir, ".grim-install-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create temporary install file: %w", err)
 	}
-	defer func() { _ = out.Close() }()
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
 
-	_, err = io.Copy(out, in)
-	return err
+	if _, err := io.Copy(tmpFile, in); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to copy binary: %w", err)
+	}
+	if err := tmpFile.Chmod(0755); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to set executable permissions: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to sync installed binary: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary install file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return fmt.Errorf("failed to commit installed binary %s: %w", dst, err)
+	}
+
+	return nil
 }
 
 func expandPath(path string) (string, error) {
@@ -1464,10 +1523,18 @@ func promptPasswordFrom(promptText string, reader *bufio.Reader) (string, error)
 // cleanupStaleWorkspaces wipes stale RAM workspaces and removes their entries
 // from Obsidian's registry. A crash can leave both a plaintext workspace and a
 // stale vault entry in ~/.config/obsidian/obsidian.json.
+// unregisterObsidianWorkspace removes a workspace from Obsidian's registry.
+// A registry error is reported but does not abort vault cleanup.
+func unregisterObsidianWorkspace(workspacePath string) {
+	if err := runner.UnregisterObsidianVault(workspacePath); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Could not clean up Obsidian registry: %v\n", err)
+	}
+}
+
 func cleanupStaleWorkspaces() []string {
 	cleaned := ramdisk.CleanupStaleWorkspaces()
 	for _, path := range cleaned {
-		runner.UnregisterObsidianVault(path)
+		unregisterObsidianWorkspace(path)
 	}
 	return cleaned
 }
