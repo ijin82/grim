@@ -32,13 +32,38 @@ type Meta struct {
 }
 
 // Init creates a new encrypted vault at vaultPath with a random Master Key protected by passphrase.
+// It refuses to overwrite an existing vault; use InitWithForce for an explicit reinitialization.
 func Init(vaultPath string, vaultName string, passphrase string) error {
+	return InitWithForce(vaultPath, vaultName, passphrase, false)
+}
+
+// InitWithForce creates a vault. When force is false, an existing vault metadata
+// file or any existing .age file makes the operation fail: replacing metadata
+// would make the old notes undecryptable without an explicit opt-in.
+func InitWithForce(vaultPath string, vaultName string, passphrase string, force bool) error {
 	if passphrase == "" {
 		return fmt.Errorf("passphrase cannot be empty")
 	}
 
 	if err := os.MkdirAll(vaultPath, 0700); err != nil {
 		return fmt.Errorf("failed to create vault directory at %s: %w", vaultPath, err)
+	}
+
+	metaPath := filepath.Join(vaultPath, MetaFileName)
+	if !force {
+		if _, err := os.Stat(metaPath); err == nil {
+			return fmt.Errorf("vault already initialized at %s; refusing to overwrite %s (use --force to reinitialize)", vaultPath, MetaFileName)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to inspect vault metadata at %s: %w", metaPath, err)
+		}
+
+		hasEncryptedFiles, err := containsEncryptedFiles(vaultPath)
+		if err != nil {
+			return fmt.Errorf("failed to inspect existing vault files: %w", err)
+		}
+		if hasEncryptedFiles {
+			return fmt.Errorf("found existing .age files in %s; refusing to create a new master key (use --force to reinitialize)", vaultPath)
+		}
 	}
 
 	// Generate random 256-bit Master Key
@@ -65,7 +90,6 @@ func Init(vaultPath string, vaultName string, passphrase string) error {
 		return fmt.Errorf("failed to encrypt vault metadata: %w", err)
 	}
 
-	metaPath := filepath.Join(vaultPath, MetaFileName)
 	if err := os.WriteFile(metaPath, encMeta, 0600); err != nil {
 		return fmt.Errorf("failed to write meta file: %w", err)
 	}
@@ -78,6 +102,41 @@ func Init(vaultPath string, vaultName string, passphrase string) error {
 	}
 
 	return nil
+}
+
+// containsEncryptedFiles reports whether the directory already contains at
+// least one encrypted note or attachment. Metadata and internal directories
+// are skipped so a fresh empty vault is still accepted.
+func containsEncryptedFiles(vaultPath string) (bool, error) {
+	found := false
+	err := filepath.WalkDir(vaultPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+
+		relPath, relErr := filepath.Rel(vaultPath, path)
+		if relErr != nil {
+			return nil
+		}
+		if relPath == "." || relPath == MetaFileName {
+			return nil
+		}
+		if relPath == ".git" || strings.HasPrefix(relPath, ".git/") || strings.HasPrefix(relPath, ".git\\") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.IsDir() && strings.HasSuffix(relPath, AgeExt) {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return found, nil
 }
 
 // VerifyPassphrase checks if the passphrase can unlock the Master Key in .vault-meta.age.

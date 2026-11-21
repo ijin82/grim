@@ -20,7 +20,7 @@ Powered by [`filippo.io/age`](https://github.com/FiloSottile/age) (X25519 Master
 
 Historically, a *grimoire* is a textbook of magic, secret knowledge, and esoteric recipes, traditionally kept under lock and key by scholars and practitioners. 
 
-In the digital era, **Grim** serves as the modern cryptographic grimoire for developers, security researchers, and note-takers: a personal sanctuary to hold your most sensitive thoughts, infrastructure credentials, server keys, and private journals — invisible to the operating system's disk, and unlocked only in temporary volatile memory.
+In the digital era, **Grim** serves as the modern cryptographic grimoire for developers, security researchers, and note-takers: a personal sanctuary to hold your most sensitive thoughts, infrastructure credentials, server keys, and private journals — unlocked into an isolated workspace and securely wiped when locked.
 
 ---
 
@@ -30,7 +30,7 @@ In the digital era, **Grim** serves as the modern cryptographic grimoire for dev
 - **Editor Support:** Works with `Vim`, `Neovim`, `VS Code`, `Helix`, `Nano`, `Micro`, `Sublime Text`, `Emacs`, and custom editors.
 - **X25519 Master Key Architecture:** Instantaneous vault unlock and microsecond file saves, regardless of vault size (10 or 10,000 notes).
 - **Age Encryption:** Modern file-level encryption using `age` (Scrypt KDF protects the master key metadata).
-- **Isolated Volatile Memory:** Unlocks files directly into RAM (`tmpfs` / isolated memory cache), never writing plaintext notes to physical SSD/HDD.
+- **Isolated Workspace:** Unlocks files into an isolated workspace: volatile RAM (`tmpfs`) when available, or a private cache directory for Flatpak, macOS, and Windows compatibility. Plaintext is wiped on lock.
 - **Continuous Live Sync:** Uses `fsnotify` to detect file saves and immediately auto-encrypts changes to `.age` files on physical disk.
 - **Auto-Lock & Multi-Pass Memory Wipe:** Closes the session on timeout, `Ctrl+C`, `lock` command, or editor exit, and overwrites RAM files with zeroes and random bytes before unmounting.
 - **Interactive Setup Wizard:** Built-in `grim setup` wizard to configure editors, auto-lock timeouts, and re-encrypt vaults.
@@ -190,6 +190,11 @@ grim setup timeout 20
 # Directly set editor for a specific vault:
 grim setup work code
 ```
+
+> [!WARNING]
+> Changing the master passphrase only re-wraps `.vault-meta.age`; it does **not** rotate the X25519 master key. Old metadata in git history plus the old passphrase can still decrypt current notes. Full key rotation is not implemented yet.
+>
+> The minimum passphrase length is 8 characters.
 
 ---
 

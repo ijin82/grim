@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -130,6 +131,77 @@ func TestVaultLifecycle(t *testing.T) {
 
 	if string(restoredContent) != noteText {
 		t.Fatalf("Restored content mismatch. Got: %s, Want: %s", string(restoredContent), noteText)
+	}
+}
+
+func TestInitRefusesExistingVault(t *testing.T) {
+	tempDir := t.TempDir()
+	vaultPath := filepath.Join(tempDir, "existing.enc")
+
+	if err := Init(vaultPath, "ExistingVault", "first-passphrase"); err != nil {
+		t.Fatalf("first Init failed: %v", err)
+	}
+
+	metaBefore, err := os.ReadFile(filepath.Join(vaultPath, MetaFileName))
+	if err != nil {
+		t.Fatalf("failed to read metadata: %v", err)
+	}
+
+	if err := Init(vaultPath, "ExistingVault", "second-passphrase"); err == nil {
+		t.Fatalf("Init must refuse to overwrite an existing vault")
+	}
+
+	metaAfter, err := os.ReadFile(filepath.Join(vaultPath, MetaFileName))
+	if err != nil {
+		t.Fatalf("failed to read metadata after refused Init: %v", err)
+	}
+	if !bytes.Equal(metaBefore, metaAfter) {
+		t.Fatalf("metadata changed after refused Init")
+	}
+}
+
+func TestInitRefusesDirectoryWithEncryptedFiles(t *testing.T) {
+	vaultPath := filepath.Join(t.TempDir(), "orphaned.enc")
+	if err := os.MkdirAll(vaultPath, 0700); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(vaultPath, "note.md.age"), []byte("ciphertext"), 0600); err != nil {
+		t.Fatalf("failed to write fake note: %v", err)
+	}
+
+	if err := Init(vaultPath, "OrphanedVault", "some-passphrase"); err == nil {
+		t.Fatalf("Init must refuse to create a new key when .age files already exist")
+	}
+}
+
+func TestInitWithForceReplacesMetadata(t *testing.T) {
+	vaultPath := filepath.Join(t.TempDir(), "forced.enc")
+
+	if err := Init(vaultPath, "ForcedVault", "first-passphrase"); err != nil {
+		t.Fatalf("first Init failed: %v", err)
+	}
+	metaBefore, err := os.ReadFile(filepath.Join(vaultPath, MetaFileName))
+	if err != nil {
+		t.Fatalf("failed to read metadata: %v", err)
+	}
+
+	if err := InitWithForce(vaultPath, "ForcedVault", "second-passphrase", true); err != nil {
+		t.Fatalf("InitWithForce failed: %v", err)
+	}
+
+	metaAfter, err := os.ReadFile(filepath.Join(vaultPath, MetaFileName))
+	if err != nil {
+		t.Fatalf("failed to read metadata after force: %v", err)
+	}
+	if bytes.Equal(metaBefore, metaAfter) {
+		t.Fatalf("InitWithForce did not replace metadata")
+	}
+
+	if _, err := VerifyPassphrase(vaultPath, "second-passphrase"); err != nil {
+		t.Fatalf("new passphrase does not unlock forced vault: %v", err)
+	}
+	if _, err := VerifyPassphrase(vaultPath, "first-passphrase"); err == nil {
+		t.Fatalf("old passphrase must not unlock forced vault")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ijin82/grim/pkg/config"
 	"github.com/ijin82/grim/pkg/ramdisk"
@@ -23,7 +24,21 @@ import (
 	"golang.org/x/term"
 )
 
-var Version = "0.1.8"
+var Version = "0.2.0"
+
+// minPassphraseLength is the minimum number of Unicode code points accepted
+// for a new or changed master passphrase.
+const minPassphraseLength = 8
+
+// validatePassphrase enforces the project-wide minimum passphrase policy.
+func validatePassphrase(passphrase string) error {
+	if utf8.RuneCountInString(passphrase) < minPassphraseLength {
+		return fmt.Errorf("passphrase is too short (minimum %d characters)", minPassphraseLength)
+	}
+	return nil
+}
+
+var initForce bool
 
 var rootCmd = &cobra.Command{
 	Use:          "grim [vault]",
@@ -68,13 +83,16 @@ var initCmd = &cobra.Command{
 		}
 
 		fmt.Printf("📖 Initializing new Grim vault '%s' at: %s\n", vaultName, absDir)
+		if initForce {
+			fmt.Println("⚠️  --force: existing vault metadata will be replaced; old notes may become undecryptable.")
+		}
 
 		pass1, err := promptPassword("Enter master passphrase: ")
 		if err != nil {
 			return err
 		}
-		if len(pass1) < 4 {
-			return fmt.Errorf("passphrase is too short (minimum 4 characters)")
+		if err := validatePassphrase(pass1); err != nil {
+			return err
 		}
 
 		pass2, err := promptPassword("Confirm master passphrase: ")
@@ -86,7 +104,7 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("passphrases do not match")
 		}
 
-		if err := vault.Init(absDir, vaultName, pass1); err != nil {
+		if err := vault.InitWithForce(absDir, vaultName, pass1, initForce); err != nil {
 			return fmt.Errorf("failed to initialize vault: %w", err)
 		}
 
@@ -98,7 +116,7 @@ var initCmd = &cobra.Command{
 		cfg.Vaults[vaultName] = config.VaultConfig{
 			Path:           absDir,
 			Editor:         cfg.DefaultEditor,
-			TimeoutMinutes: 30,
+			TimeoutMinutes: config.DefaultTimeoutMinutes,
 		}
 
 		if cfg.DefaultVault == "" {
@@ -394,7 +412,7 @@ func attachVaultDirect(cfg *config.Config, suggestedName string, absDir string) 
 	cfg.Vaults[vaultName] = config.VaultConfig{
 		Path:           absDir,
 		Editor:         cfg.DefaultEditor,
-		TimeoutMinutes: 30,
+		TimeoutMinutes: config.DefaultTimeoutMinutes,
 	}
 
 	if cfg.DefaultVault == "" {
@@ -520,6 +538,10 @@ var removeCmd = &cobra.Command{
 
 		if _, exists := cfg.Vaults[name]; !exists {
 			return fmt.Errorf("vault '%s' not found in configuration", name)
+		}
+
+		if ramdisk.IsUnlocked(name) {
+			return fmt.Errorf("vault '%s' is currently unlocked in RAM; run 'grim lock %s' first", name, name)
 		}
 
 		delete(cfg.Vaults, name)
@@ -782,17 +804,25 @@ func executeOpen(vaultName string) error {
 		editorWait = proc.WaitChan
 	}
 
-	select {
-	case <-sigChan:
-		fmt.Println("\n🔒 Interrupt signal received. Locking vault...")
-	case input := <-inputChan:
-		if input == "lock" || input == "q" || input == "exit" || input == "close" {
-			fmt.Println("\n🔒 Lock command received. Locking vault...")
+sessionLoop:
+	for {
+		select {
+		case <-sigChan:
+			fmt.Println("\n🔒 Interrupt signal received. Locking vault...")
+			break sessionLoop
+		case input := <-inputChan:
+			if isLockCommand(input) {
+				fmt.Println("\n🔒 Lock command received. Locking vault...")
+				break sessionLoop
+			}
+			fmt.Printf("\n❓ Unknown command %q. Type 'lock' or 'q' to lock the vault.\n> ", strings.TrimSpace(input))
+		case <-timeoutChan:
+			fmt.Printf("\n⏰ %d minutes of inactivity reached! Automatically locking vault...\n", vCfg.TimeoutMinutes)
+			break sessionLoop
+		case <-editorWait:
+			fmt.Println("\n🚪 Editor closed. Locking vault...")
+			break sessionLoop
 		}
-	case <-timeoutChan:
-		fmt.Printf("\n⏰ %d minutes of inactivity reached! Automatically locking vault...\n", vCfg.TimeoutMinutes)
-	case <-editorWait:
-		fmt.Println("\n🚪 Editor closed. Locking vault...")
 	}
 
 	// Stop watcher
@@ -1105,8 +1135,8 @@ func changePassphraseInteractive(cfg *config.Config, vaultName string) error {
 	if err != nil {
 		return err
 	}
-	if len(newPass1) < 4 {
-		fmt.Println("❌ New passphrase is too short (min 4 chars).")
+	if err := validatePassphrase(newPass1); err != nil {
+		fmt.Printf("❌ %v\n", err)
 		return nil
 	}
 
@@ -1120,13 +1150,25 @@ func changePassphraseInteractive(cfg *config.Config, vaultName string) error {
 		return nil
 	}
 
-	fmt.Println("⏳ Re-encrypting master key metadata with new passphrase...")
+	fmt.Println("⏳ Re-wrapping master key metadata with new passphrase...")
 	if err := vault.ChangePassphrase(vCfg.Path, oldPass, newPass1); err != nil {
 		return fmt.Errorf("failed to change passphrase: %w", err)
 	}
 
 	fmt.Printf("🎉 Master passphrase for vault '%s' successfully changed!\n", vaultName)
+	fmt.Println("⚠️  Note: this only re-wraps .vault-meta.age. The X25519 master key was NOT rotated.")
+	fmt.Println("    Old metadata from git history plus the old passphrase can still decrypt current notes.")
 	return nil
+}
+
+// isLockCommand reports whether the user asked to close the session.
+func isLockCommand(input string) bool {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "lock", "q", "exit", "close":
+		return true
+	default:
+		return false
+	}
 }
 
 func selectVaultToConfigure(cfg *config.Config) error {
@@ -1333,6 +1375,7 @@ func shouldCleanupWorkspaces(cmd *cobra.Command) bool {
 }
 
 func main() {
+	initCmd.Flags().BoolVar(&initForce, "force", false, "Replace existing vault metadata (DANGEROUS)")
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(removeCmd)
