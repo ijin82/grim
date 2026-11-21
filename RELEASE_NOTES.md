@@ -1,5 +1,12 @@
 # Grim Release Notes
 
+## 0.3.3 — 2026-11-21
+
+### Fixed
+
+- Root `.gitignore` and `.gitattributes` are no longer encrypted; they remain plaintext in the vault so Git can use them.
+- Legacy `.gitignore.age` / `.gitattributes.age` files are migrated to plaintext and removed during unlock.
+
 ## 0.3.2 — 2026-11-21
 
 ### Changed
